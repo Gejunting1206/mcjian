@@ -1,0 +1,7 @@
+ursina
+perlin-noise
+Pillow
+numpy
+selenium
+openai
+easygui

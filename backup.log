@@ -1,0 +1,45 @@
+2025-05-06 21:01:59,545 - INFO - 成功备份文件: d:\zibian\mcjian\backup\backup_query.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210159\backup_query.py
+2025-05-06 21:01:59,546 - ERROR - 无法备份文件 d:\zibian\mcjian\backup\backups\backup_20250506_210159\backup_query.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,207 - INFO - 成功备份文件: .//block.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\block.py
+2025-05-06 21:03:06,207 - INFO - 成功备份文件: .//block_cache.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\block_cache.py
+2025-05-06 21:03:06,208 - INFO - 成功备份文件: .//chunk_loading_config.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\chunk_loading_config.py
+2025-05-06 21:03:06,209 - INFO - 成功备份文件: .//chunk_loading_optimizer.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\chunk_loading_optimizer.py
+2025-05-06 21:03:06,210 - INFO - 成功备份文件: .//chunk_state_manager.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\chunk_state_manager.py
+2025-05-06 21:03:06,210 - INFO - 成功备份文件: .//frustum_culling.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\frustum_culling.py
+2025-05-06 21:03:06,211 - INFO - 成功备份文件: .//hotbar.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\hotbar.py
+2025-05-06 21:03:06,211 - INFO - 成功备份文件: .//loading_system.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\loading_system.py
+2025-05-06 21:03:06,212 - INFO - 成功备份文件: .//lod_system.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\lod_system.py
+2025-05-06 21:03:06,212 - INFO - 成功备份文件: .//main.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\main.py
+2025-05-06 21:03:06,213 - INFO - 成功备份文件: .//performance_optimizer.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\performance_optimizer.py
+2025-05-06 21:03:06,214 - INFO - 成功备份文件: .//backup\backup_query.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\backup_query.py
+2025-05-06 21:03:06,216 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\backup_query.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,217 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\block.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,218 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\block_cache.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,219 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\chunk_loading_config.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,220 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\chunk_loading_optimizer.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,221 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\chunk_state_manager.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,224 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\frustum_culling.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,226 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\hotbar.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,228 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\loading_system.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,229 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\lod_system.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,230 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\main.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,231 - ERROR - 无法备份文件 .//backup\backups\backup_20250506_210306\performance_optimizer.py: [WinError 32] 另一个程序正在使用此文件，进程无法访问。
+2025-05-06 21:03:06,231 - INFO - 成功备份文件: .//tmp\blur_background.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\blur_background.py
+2025-05-06 21:03:06,232 - INFO - 成功备份文件: .//tmp\caimi.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\caimi.py
+2025-05-06 21:03:06,232 - INFO - 成功备份文件: .//tmp\colorize.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\colorize.py
+2025-05-06 21:03:06,233 - INFO - 成功备份文件: .//tmp\image_colorizer.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\image_colorizer.py
+2025-05-06 21:03:06,233 - INFO - 成功备份文件: .//tmp\maze_game.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\maze_game.py
+2025-05-06 21:03:06,234 - INFO - 成功备份文件: .//tmp\resize_images.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\resize_images.py
+2025-05-06 21:03:06,234 - INFO - 成功备份文件: .//tmp\zidonghua.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\zidonghua.py
+2025-05-06 21:03:06,236 - INFO - 成功备份文件: .//tmp\跑酷.py -> d:\zibian\mcjian\backup\backups\backup_20250506_210306\跑酷.py
+2025-05-06 21:45:50,412 - INFO - 成功备份文件: .//block.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\block.py
+2025-05-06 21:45:50,418 - INFO - 成功备份文件: .//block_cache.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\block_cache.py
+2025-05-06 21:45:50,418 - INFO - 成功备份文件: .//chunk_loading_config.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\chunk_loading_config.py
+2025-05-06 21:45:50,419 - INFO - 成功备份文件: .//chunk_loading_optimizer.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\chunk_loading_optimizer.py
+2025-05-06 21:45:50,419 - INFO - 成功备份文件: .//chunk_state_manager.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\chunk_state_manager.py
+2025-05-06 21:45:50,420 - INFO - 成功备份文件: .//frustum_culling.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\frustum_culling.py
+2025-05-06 21:45:50,421 - INFO - 成功备份文件: .//hotbar.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\hotbar.py
+2025-05-06 21:45:50,421 - INFO - 成功备份文件: .//loading_system.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\loading_system.py
+2025-05-06 21:45:50,421 - INFO - 成功备份文件: .//lod_system.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\lod_system.py
+2025-05-06 21:45:50,422 - INFO - 成功备份文件: .//main.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\main.py
+2025-05-06 21:45:50,422 - INFO - 成功备份文件: .//performance_optimizer.py -> d:\zibian\mcjian\backup\backups\创造实验1\backup_20250506_214550\performance_optimizer.py
