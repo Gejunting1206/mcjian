@@ -24,7 +24,8 @@ import time  # 时间相关功能
 import numpy as np  # 数值计算
 
 # 随机数生成
-from random import randint, choice, uniform, random  # 随机数生成器
+from random import randint, choice, uniform
+import random  # 随机数生成器
 
 # Ursina组件
 from ursina.prefabs.health_bar import HealthBar  # 血条UI
@@ -465,7 +466,7 @@ class Block(Button):
             should_process = self.collision_cooldown <= 0 and self.in_range
             if should_process and self.distance_to_player > 3: # 对于距离稍远的方块 (3到5之间)
                 # 随机跳过一部分处理，降低频率
-                if random() > 0.5: # 50% 的概率跳过
+                if random.random() > 0.5: # 50% 的概率跳过
                     should_process = False
                     
             if should_process:
@@ -1084,7 +1085,7 @@ class Chunk:
                 if not any(bd[0] == Vec3(x + chunk_x * CHUNK_SIZE, current_height, z + chunk_z * CHUNK_SIZE) for bd in blocks_data):
                     is_cave_entrance = True
 
-                if not is_cave_entrance and current_height > base_height and random() < 0.01:  # 降低单个位置生成树的概率到1%
+                if not is_cave_entrance and current_height > base_height and random.random() < 0.01:  # 降低单个位置生成树的概率到1%
                     tree_candidates.append((x, z, current_height))
         
         # 随机选择最多max_trees个位置生成树
@@ -1742,6 +1743,9 @@ class Hand(Entity):
     def pass_tive(self):
         self.position = Vec2(0.7, -0.6)
 
+ # 猪类
+
+
 # 修改生成初始区块的函数
 def generate_initial_chunks():
     if not hasattr(player, 'position'):
@@ -1897,45 +1901,8 @@ class MainMenu(Entity):
         def start_game_directly():
             # 初始化游戏
             initialize_game()
-            
-            # 猪类
-            class Pig(Entity):
-                def __init__(self, position=(0, 0, 0)):
-                    super().__init__(
-                        parent=scene,
-                        position=position,
-                        model='cube', # 暂时使用cube模型，后续可以替换为猪的模型
-                        color=color.pink,
-                        scale=0.5,
-                        collider='box'
-                    )
-                    self.speed = 0.1
-                    self.direction = Vec3(random.uniform(-1, 1), 0, random.uniform(-1, 1)).normalized()
-                    self.target_position = self.position + self.direction * random.uniform(5, 15)
-                    self.path_timer = time.time() # 确保初始化
-                    self.path_duration = random.uniform(5, 15) # 确保初始化
 
-                def update(self):
-                    # 简单的移动逻辑
-                    if time.time() - self.path_timer > self.path_duration:
-                        self.direction = Vec3(random.uniform(-1, 1), 0, random.uniform(-1, 1)).normalized()
-                        self.target_position = self.position + self.direction * random.uniform(5, 15)
-                        self.path_timer = time.time()
-                        self.path_duration = random.uniform(5, 15)
 
-                    # 移动到目标位置
-                    self.position += self.direction * self.speed * time.dt
-
-                    # 简单的边界检查，防止猪跑出世界
-                    if abs(self.position.x) > 100 or abs(self.position.z) > 100:
-                        self.position = Vec3(0, self.position.y, 0)
-                        self.direction = Vec3(random.uniform(-1, 1), 0, random.uniform(-1, 1)).normalized()
-                        self.target_position = self.position + self.direction * random.uniform(5, 15)
-
-            # 生成猪的函数
-            def spawn_pig(position):
-                pig = Pig(position)
-                return pig
 
             # 创建玩家
             global player, hotbar
@@ -1956,8 +1923,7 @@ class MainMenu(Entity):
             # 创建物品栏
             hotbar = Hotbar(Block_list)
 
-            # 生成猪
-            spawn_pig(Vec3(0, 5, 5)) # 在(0, 5, 5)位置生成一只猪
+
             
             # 计算出生点的地形高度
             spawn_x, spawn_z = 0, 0
@@ -2143,7 +2109,7 @@ def update():
                 if hasattr(player, 'y_animator') and player.y_animator:
                     # 如果玩家正在向上移动（可能是弹跳），立即停止动画
                     # 检查动画是否仍在播放，而不是访问不存在的.value属性
-                    if player.y_animator.playing:
+                    if hasattr(player.y_animator, 'playing') and player.y_animator.playing:
                         player.y_animator.kill()
                 
                 # 检查玩家是否陷入方块，如果是则将其向上移动
