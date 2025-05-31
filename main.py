@@ -145,6 +145,9 @@ last_time = time.time()
 fps = 0
 fps_text = None  # 初始化fps_text变量
 
+# UI隐藏状态变量
+ui_hidden = False
+
 # 区块生成相关配置
 # 线程池用于异步生成区块，max_workers控制最大并发线程数
 # 优化线程池配置，减少资源竞争
@@ -1630,56 +1633,25 @@ def initialize_game():
 
 # 修改 input 函数，添加性能优化快捷键
 def input(key):
-    global block_type_id, current_state, player, hand, sky, show_performance_stats, hotbar, chunk_loading_optimizer
-    
-    # 处理集成优化管理器快捷键
+    global block_type_id, current_state, player, hand, sky, show_performance_stats, hotbar, chunk_loading_optimizer, ui_hidden
+
+    # F1 键：隐藏/显示UI
     if key == 'f1':
-        # 切换实例化渲染
-        optimization_manager.toggle_instanced_rendering()
-        print(f"实例化渲染: {'开启' if optimization_manager.use_instanced_rendering else '关闭'}")
+        ui_hidden = not ui_hidden
+        for entity in scene.entities:
+            if hasattr(entity, 'is_ui') and entity.is_ui:
+                entity.enabled = not ui_hidden
+        if performance_stats_text:
+            performance_stats_text.enabled = show_performance_stats and not ui_hidden
+        print(f"UI {'隐藏' if ui_hidden else '显示'}")
+
+    # F2 键：截图
     elif key == 'f2':
-        # 切换网格合并
-        optimization_manager.toggle_mesh_combining()
-        print(f"网格合并: {'开启' if optimization_manager.use_mesh_combining else '关闭'}")
-    elif key == 'f3':
-        # 切换距离剔除
-        optimization_manager.toggle_distance_culling()
-        print(f"距离剔除: {'开启' if optimization_manager.use_distance_culling else '关闭'}")
-    elif key == 'f4':
-        # 切换区块管理
-        optimization_manager.toggle_chunk_management()
-        print(f"区块管理: {'开启' if optimization_manager.use_chunk_management else '关闭'}")
-    elif key == 'f5':
-        # 切换自适应优化
-        optimization_manager.toggle_adaptive_optimization()
-        print(f"自适应优化: {'开启' if optimization_manager.adaptive_optimization else '关闭'}")
-    # 处理综合性能优化器快捷键
+        camera.save_screenshot(name='screenshot', suffix='.png')
+        print("截图已保存！")
     elif key == 'f12':  # F12: 切换综合性能优化器
         enabled = comprehensive_optimizer.toggle()
         print(f"综合性能优化器: {'开启' if enabled else '关闭'}")
-        
-    # 处理原有性能优化快捷键（在任何游戏状态下都可用）
-    elif key == 'f8':  # F8: 切换所有优化
-        enabled = performance_optimizer.toggle()
-        print(f"性能优化: {'开启' if enabled else '关闭'}")
-    elif key == 'f9':  # F9: 切换视锥体剔除
-        enabled = performance_optimizer.toggle_frustum_culling()
-        print(f"视锥体剔除: {'开启' if enabled else '关闭'}")
-    elif key == 'f10':  # F10: 切换LOD系统
-        enabled = performance_optimizer.toggle_lod()
-        print(f"LOD系统: {'开启' if enabled else '关闭'}")
-    elif key == 'f11':  # F11: 切换性能统计显示
-        show_performance_stats = not show_performance_stats
-        if performance_stats_text:
-            performance_stats_text.visible = show_performance_stats
-        print(f"性能统计: {'显示' if show_performance_stats else '隐藏'}")
-    elif key == 'f7':  # F7: 切换区块加载优化器
-        enabled = chunk_loading_optimizer.toggle()
-        print(f"区块加载优化: {'开启' if enabled else '关闭'}")
-        # 如果开启，预热缓存
-        if enabled and player and hasattr(player, 'position'):
-            preload_initial_chunks(player.position, distance=1)
-    
     # 只有在游戏状态下才处理这些输入
     if current_state == GameState.PLAYING:
         if key == 'escape':
@@ -2050,7 +2022,7 @@ def check_player_landing():
     check_player_landing.last_y_velocity = current_y_velocity
 
 def update():
-    global hand, frame_count, last_time, fps, player, sync_chunk_generation_counter
+    global hand, frame_count, last_time, fps, player, sync_chunk_generation_counter, ui_hidden
     try:
         # 每帧重置同步区块生成计数器
         sync_chunk_generation_counter = 0
@@ -2094,6 +2066,10 @@ def update():
                 
                 # 更新性能统计显示
                 update_performance_stats()
+
+                # 根据ui_hidden状态控制性能统计显示
+                if performance_stats_text:
+                    performance_stats_text.enabled = show_performance_stats and not ui_hidden
                 
                 # 更新优化管理器
                 # 检查loaded_chunks是否为空，而不是使用不存在的self.blocks
