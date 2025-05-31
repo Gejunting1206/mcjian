@@ -57,6 +57,9 @@ from optimization.optimization_integration import OptimizationManager  # 集成�
 # 导入综合性能优化器
 from optimization.comprehensive_performance_optimizer import comprehensive_optimizer  # 综合性能优化器
 
+# 导入面片渲染系统
+from mesh_splitting_renderer import mesh_renderer, MeshSplittingRenderer
+
 # 设置默认字体为支持中文的Minecraft字体
 Text.default_font = 'assets/5_Minecraft AE(支持中文).ttf'
 
@@ -172,6 +175,9 @@ base_height = 5   # 基础高度
 
 # 玩家变量，将在游戏开始时初始化
 player = None
+
+# 初始化面片渲染器
+mesh_renderer = None
 
 would = []
 
@@ -1600,11 +1606,15 @@ def update_chunks():
 
 # 修改初始化函数
 def initialize_game():
-    global hand, sky, fps_text, performance_stats_text  # 声明全局变量
+    global hand, sky, fps_text, performance_stats_text, mesh_renderer  # 声明全局变量
     
     # 添加UI和其他组件
     sky = Sky(texture='assets/skybox.png')
     hand = Hand()
+    
+    # 初始化面片渲染器
+    mesh_renderer = MeshSplittingRenderer()
+    print("面片渲染器初始化完成")
     
     # 初始化区块加载优化器
     chunk_loading_optimizer.enabled = True
@@ -2055,6 +2065,11 @@ def update():
         
         # 更新性能优化系统
         performance_optimizer.update()
+        
+        # 更新面片渲染器
+        if 'mesh_renderer' in globals() and mesh_renderer:
+            mesh_renderer.update_culling(camera.position, camera.rotation)
+            mesh_renderer.render_faces()
         
         # 每秒更新一次FPS计数 - 减少计算频率
         if current_time - last_time >= 1.0:

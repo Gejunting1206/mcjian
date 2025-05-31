@@ -351,8 +351,8 @@ class ChunkLoadingOptimizer:
         from chunk_loading_config import ChunkLoadingConfig
         
         # 更新性能历史记录
-        current_fps = self.performance_monitor.get_current_fps()
-        current_frame_time = self.performance_monitor.get_frame_time()
+        current_fps = self.performance_monitor.stats.get('current_fps', 60) # 使用 .get() 提供默认值
+        current_frame_time = self.performance_monitor.stats.get('frame_time_ms', 0.016) / 1000.0 # 获取毫秒并转换为秒
         self.fps_history.append(current_fps)
         self.frame_time_history.append(current_frame_time)
         

@@ -83,7 +83,7 @@ class ChunkStateManager:
                 try:
                     if mod['action'] == 'add':
                         # 添加方块
-                        new_block = Block(position=mod['position'], id=mod['id'])
+                        new_block = Block(position=mod['position'], id=mod['id'], use_mesh_splitting=True)
                         chunk.blocks.append(new_block)
                     elif mod['action'] == 'remove':
                         # 移除方块
