@@ -12,8 +12,8 @@ This is a Python-based Minecraft-style game project. It aims to provide an explo
   - Dynamically generated infinite block worlds.
 - **玩家移动与交互 (Player Movement and Interaction)**: 玩家可以在世界中自由移动、放置和破坏方块。
   - Players can move freely, place, and destroy blocks in the world.
-- **性能优化 (Performance Optimization)**: 包含多种优化技术，如视锥体剔除、LOD 系统、GPU 加速渲染等，以提高游戏性能。
-  - Includes various optimization techniques such as frustum culling, LOD system, GPU-accelerated rendering, etc., to improve game performance.
+- **性能优化 (Performance Optimization)**: 包含多种优化技术，如视锥体剔除、LOD 系统、GPU 加速渲染、**中空方块渲染**等，以提高游戏性能。
+  - Includes various optimization techniques such as frustum culling, LOD system, GPU-accelerated rendering, **hollow block rendering**, etc., to improve game performance.
 - **光照系统 (Lighting System)**: 基础的光照效果。
   - Basic lighting effects.
 - **背包与物品 (Inventory and Items)**: 简单的物品管理和使用。

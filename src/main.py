@@ -487,7 +487,12 @@ class Block(Button):
                 
                 if key == 'right mouse down':
                     # 放置方块
-                    pos = self.position + mouse.normal
+                    # 确保放置的方块在玩家可及范围内
+                    if distance(player.position, self.position) < 6:
+                        # 放置方块
+                        # 确保新方块的位置是整数坐标
+                        pos = self.position + mouse.normal
+                        pos = Vec3(floor(pos.x + 0.5), floor(pos.y + 0.5), floor(pos.z + 0.5))
                     chunk_pos = get_chunk_position(pos)
                     
                     # 优化方块存在检查 - 使用哈希表加速查找

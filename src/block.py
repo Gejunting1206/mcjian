@@ -62,7 +62,7 @@ class Block(Button):
     
     def destroy(self):
         """销毁方块时同时从面片渲染系统中移除"""
-        if hasattr(self, 'use_mesh_splitting') and self.use_mesh_splitting:
+        if Block.use_mesh_splitting_globally:
             import main
             if hasattr(main, 'mesh_renderer') and main.mesh_renderer:
                 main.mesh_renderer.remove_block(Vec3(*self.position))

@@ -1,5 +1,6 @@
 from ursina import *
 from ursina.vec3 import Vec3
+from ursina.mesh import Mesh
 import numpy as np
 from math import sqrt
 from typing import List, Dict, Tuple, Set
@@ -141,21 +142,25 @@ class OcclusionCuller:
         self.block_positions = positions
     
     def is_face_occluded(self, face: BlockFace, camera_pos: Vec3) -> bool:
-        """检查面片是否被遮挡"""
-        # 简化的遮挡检测：检查面片前方是否有其他方块
+        """检查面片是否被遮挡 - 优化的中空方块渲染"""
         face_center = self._get_face_center(face)
         direction_to_camera = (camera_pos - face_center).normalized()
         
         # 根据面的类型确定检查方向
         check_direction = self._get_face_normal(face.face_type)
         
-        # 如果面朝向与摄像机方向相反，则可能被遮挡
-        if direction_to_camera.dot(check_direction) < 0:
+        # 背面剔除：如果面片法线与摄像机方向夹角大于90度，则剔除
+        if direction_to_camera.dot(check_direction) < -0.1:  # 允许一定的容差
             return True
         
-        # 检查面前方是否有相邻方块
+        # 相邻方块遮挡检测：检查面片外侧是否有相邻方块
         adjacent_pos = face.position + check_direction
-        return adjacent_pos in self.block_positions
+        
+        # 如果相邻位置有方块，则该面片被完全遮挡（实现中空效果）
+        if adjacent_pos in self.block_positions:
+            return True
+            
+        return False
     
     def _get_face_center(self, face: BlockFace) -> Vec3:
         """获取面片中心点"""
@@ -254,15 +259,23 @@ class MeshSplittingRenderer:
         return faces
     
     def add_block(self, position: Vec3, block_id: int, block_type: str = 'default'):
-        """添加方块并拆分为面片"""
+        """添加方块并拆分为面片 - 优化的中空方块系统"""
         faces = self.split_block_to_faces(position, block_id, block_type)
-        self.block_faces[block_id] = faces
+        
+        # 使用位置作为键而不是block_id，因为可能有多个方块使用相同ID
+        position_key = (int(position.x), int(position.y), int(position.z))
+        self.block_faces[position_key] = faces
         self.stats['total_faces'] += len(faces)
+        
+        # 更新相邻方块的可见性（中空效果的关键）
+        self._update_adjacent_faces_visibility(position)
     
-    def remove_block(self, block_id: int):
-        """移除方块及其面片"""
-        if block_id in self.block_faces:
-            faces = self.block_faces[block_id]
+    def remove_block(self, position: Vec3):
+        """移除方块及其面片 - 优化的中空方块系统"""
+        position_key = (int(position.x), int(position.y), int(position.z))
+        
+        if position_key in self.block_faces:
+            faces = self.block_faces[position_key]
             self.stats['total_faces'] -= len(faces)
             
             # 移除渲染实体
@@ -272,7 +285,10 @@ class MeshSplittingRenderer:
                     destroy(self.render_entities[face_hash])
                     del self.render_entities[face_hash]
             
-            del self.block_faces[block_id]
+            del self.block_faces[position_key]
+            
+            # 更新相邻方块的可见性
+            self._update_adjacent_faces_visibility(position)
     
     def update_culling(self, camera_pos: Vec3, camera_rotation: Vec3):
         """更新剔除计算"""
@@ -284,9 +300,10 @@ class MeshSplittingRenderer:
         
         # 更新遮挡剔除器的方块位置信息
         all_positions = set()
-        for faces in self.block_faces.values():
-            for face in faces:
-                all_positions.add(face.position)
+        for position_key, faces in self.block_faces.items():
+            # 从位置键重建Vec3位置
+            pos = Vec3(position_key[0], position_key[1], position_key[2])
+            all_positions.add(pos)
         self.occlusion_culler.update_block_positions(all_positions)
         
         # 重置统计
@@ -297,7 +314,7 @@ class MeshSplittingRenderer:
         self.visible_faces.clear()
         
         # 对每个面片进行剔除测试
-        for block_id, faces in self.block_faces.items():
+        for position_key, faces in self.block_faces.items():
             for face in faces:
                 # 计算到摄像机的距离
                 face_center = self.occlusion_culler._get_face_center(face)
@@ -326,15 +343,15 @@ class MeshSplittingRenderer:
                     self.stats['occluded_faces'] += 1
                     continue
 
-                # 新增：根据面片法线和摄像机方向进行剔除
+                # 智能面片剔除：只渲染外表面，实现中空方块效果
                 # 获取面片法线
                 face_normal = self.occlusion_culler._get_face_normal(face.face_type)
                 # 计算摄像机到面片中心的向量
                 camera_to_face = (face_center - camera_pos).normalized()
                 
-                # 如果面片法线与摄像机到面片中心的向量点积小于0，说明面片背对摄像机，进行剔除
-                # 这里的阈值可以根据“两三面”的需求进行调整，目前是严格剔除背对面
-                if face_normal.dot(camera_to_face) > 0.1: # 稍微大于0，避免浮点误差，并允许一定角度的侧面
+                # 背面剔除：如果面片背对摄像机，则剔除
+                # 使用更宽松的阈值，允许侧面可见
+                if face_normal.dot(-camera_to_face) < -0.2:  # 调整阈值以显示更多侧面
                     face.is_visible = False
                     self.stats['culled_faces'] += 1
                     continue
@@ -403,21 +420,134 @@ class MeshSplittingRenderer:
             entity.enabled = face.is_visible and not face.is_occluded
     
     def _adjust_face_entity(self, entity: Entity, face: BlockFace):
-        """调整面片实体的属性"""
-        # 根据面的类型设置不同的颜色（用于调试）
-        face_colors = {
-            FaceType.TOP: color.green,
-            FaceType.BOTTOM: color.brown,
-            FaceType.FRONT: color.blue,
-            FaceType.BACK: color.red,
-            FaceType.LEFT: color.yellow,
-            FaceType.RIGHT: color.orange
+        """调整面片实体的属性 - 优化的中空方块渲染"""
+        # 创建单个面片而不是完整立方体
+        # 根据面的类型创建对应的四边形面片
+        vertices, triangles = self._create_face_mesh(face)
+        
+        # 创建自定义网格
+        entity.model = Mesh(vertices=vertices, triangles=triangles, mode='triangle')
+        
+        # 根据方块类型设置纹理和颜色
+        block_colors = {
+            'grass': color.green,
+            'dirt': color.brown, 
+            'stone': color.gray,
+            'wood': color.orange,
+            'leaf': color.lime,
+            'bed': color.dark_gray,
+            'brick': color.red,
+            'check': color.white
         }
         
-        entity.color = face_colors.get(face.face_type, color.white)
+        # 获取方块类型
+        block_type = self._get_block_type_from_id(face.block_id)
+        entity.color = block_colors.get(block_type, color.white)
         
-        # 可以在这里添加更多面片特定的调整
-        # 例如：纹理映射、材质属性等
+        # 设置面片特定属性
+        entity.double_sided = False  # 单面渲染，提高性能
+        entity.alpha = 1.0  # 完全不透明
+        
+    def _create_face_mesh(self, face: BlockFace):
+        """为单个面片创建网格数据"""
+        # 面片的四个顶点（相对于面片中心）
+        scale = 0.5
+        
+        if face.face_type == FaceType.TOP:
+            vertices = [
+                (-scale, 0, -scale), (scale, 0, -scale),
+                (scale, 0, scale), (-scale, 0, scale)
+            ]
+        elif face.face_type == FaceType.BOTTOM:
+            vertices = [
+                (-scale, 0, scale), (scale, 0, scale),
+                (scale, 0, -scale), (-scale, 0, -scale)
+            ]
+        elif face.face_type == FaceType.FRONT:
+            vertices = [
+                (-scale, -scale, 0), (-scale, scale, 0),
+                (scale, scale, 0), (scale, -scale, 0)
+            ]
+        elif face.face_type == FaceType.BACK:
+            vertices = [
+                (scale, -scale, 0), (scale, scale, 0),
+                (-scale, scale, 0), (-scale, -scale, 0)
+            ]
+        elif face.face_type == FaceType.LEFT:
+            vertices = [
+                (0, -scale, -scale), (0, scale, -scale),
+                (0, scale, scale), (0, -scale, scale)
+            ]
+        elif face.face_type == FaceType.RIGHT:
+            vertices = [
+                (0, -scale, scale), (0, scale, scale),
+                (0, scale, -scale), (0, -scale, -scale)
+            ]
+        
+        # 三角形索引（两个三角形组成一个四边形）
+        triangles = [0, 1, 2, 0, 2, 3]
+        
+        return vertices, triangles
+        
+    def _get_block_type_from_id(self, block_id: int) -> str:
+        """根据方块ID获取方块类型"""
+        block_types = {
+            0: 'grass',
+            1: 'grass', 
+            2: 'stone',
+            3: 'dirt',
+            4: 'bed',
+            5: 'wood',
+            6: 'leaf',
+            7: 'brick',
+            8: 'check'
+        }
+        return block_types.get(block_id, 'default')
+    
+    def _update_adjacent_faces_visibility(self, position: Vec3):
+        """更新相邻方块的面片可见性 - 实现中空效果的核心逻辑"""
+        # 定义6个相邻方向
+        adjacent_directions = [
+            Vec3(0, 1, 0),   # 上
+            Vec3(0, -1, 0),  # 下
+            Vec3(0, 0, 1),   # 前
+            Vec3(0, 0, -1),  # 后
+            Vec3(-1, 0, 0),  # 左
+            Vec3(1, 0, 0)    # 右
+        ]
+        
+        # 检查每个相邻位置
+        for direction in adjacent_directions:
+            adjacent_pos = position + direction
+            adjacent_key = (int(adjacent_pos.x), int(adjacent_pos.y), int(adjacent_pos.z))
+            
+            # 如果相邻位置有方块，更新其面片可见性
+            if adjacent_key in self.block_faces:
+                self._update_block_face_visibility(adjacent_key, adjacent_pos)
+    
+    def _update_block_face_visibility(self, position_key: tuple, position: Vec3):
+        """更新单个方块的面片可见性"""
+        if position_key not in self.block_faces:
+            return
+            
+        faces = self.block_faces[position_key]
+        
+        # 检查每个面片是否应该被渲染
+        for face in faces:
+            # 获取面片的法线方向
+            face_normal = self.occlusion_culler._get_face_normal(face.face_type)
+            # 检查该方向是否有相邻方块
+            adjacent_pos = position + face_normal
+            adjacent_key = (int(adjacent_pos.x), int(adjacent_pos.y), int(adjacent_pos.z))
+            
+            # 如果相邻位置有方块，则该面片应该被隐藏（中空效果）
+            face.is_occluded = adjacent_key in self.block_faces
+            
+            # 更新渲染实体的可见性
+            face_hash = hash((face.position.x, face.position.y, face.position.z, face.face_type.value))
+            if face_hash in self.render_entities:
+                entity = self.render_entities[face_hash]
+                entity.enabled = not face.is_occluded
     
     def get_performance_stats(self) -> Dict[str, int]:
         """获取性能统计信息"""
