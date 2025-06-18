@@ -11,7 +11,7 @@ class InstancedRenderer:
         self.combined_entities = {}  # 存储合并后的实体
         self.dirty_groups = set()  # 需要更新的方块组
         self.last_update_time = 0
-        self.update_interval = 0.05  # 更新间隔（秒），从1.0降低到0.05以提高响应性
+        self.update_interval = 0.1  # 更新间隔（秒），从0.05增加到0.1以减少CPU负载
     
     def add_block(self, block):
         """添加方块到渲染组"""
@@ -37,7 +37,7 @@ class InstancedRenderer:
         self.last_update_time = current_time
         
         # 限制每次更新处理的脏组数量，避免卡顿
-        dirty_groups_to_process = list(self.dirty_groups)[:10]  # 每次最多处理10个组
+        dirty_groups_to_process = list(self.dirty_groups)[:15]  # 每次最多处理15个组，从10增加以加快脏组处理
         
         # 更新所有标记为脏的方块组
         for block_id in dirty_groups_to_process:
@@ -135,7 +135,7 @@ class MeshCombiner:
     def update(self, blocks_by_chunk):
         """更新所有脏区块的合并网格"""
         # 限制每次更新处理的脏区块数量
-        dirty_chunks_to_process = list(self.dirty_chunks)[:5]  # 每次最多处理5个区块
+        dirty_chunks_to_process = list(self.dirty_chunks)[:8]  # 每次最多处理8个区块，从5增加以加快区块更新
         
         for chunk_coords in dirty_chunks_to_process:
             # 获取该区块的所有方块

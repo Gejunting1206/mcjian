@@ -350,7 +350,7 @@ class AdvancedShaderOptimizer:
                 
                 // 应用光照
                 float ndotl = max(dot(world_normal, light_direction), 0.0);
-                vec3 lighting = ambient_color + vec3(ndotl) * 0.7;
+                vec3 lighting = ambient_color + diffuse * 0.5;
                 
                 // 最终颜色
                 vec4 final_color = base_color * vertex_color * vec4(lighting, 1.0) * p3d_ColorScale;
@@ -387,6 +387,8 @@ class AdvancedShaderOptimizer:
             uniform vec4 p3d_ColorScale;
             uniform float time;
             uniform vec3 sun_direction;
+            uniform float sun_size;
+            uniform float night_intensity;
             
             in vec3 texcoords;
             
@@ -399,6 +401,11 @@ class AdvancedShaderOptimizer:
             const float mie_scale = 1200.0;
             const vec3 rayleigh_color = vec3(0.27, 0.5, 1.0);
             const vec3 mie_color = vec3(1.0);
+            
+            // 噪声函数（用于星空效果）
+            float noise(vec2 p) {
+                return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+            }
             
             // 大气散射函数
             vec3 atmosphere(vec3 ray_dir, vec3 sun_dir) {
@@ -422,11 +429,29 @@ class AdvancedShaderOptimizer:
                 vec3 ray_dir = normalize(texcoords);
                 vec3 atmos = atmosphere(ray_dir, normalize(sun_direction));
                 
-                // 添加太阳
-                float sun_spot = max(0.0, pow(dot(ray_dir, normalize(sun_direction)), 512.0));
+                // 添加太阳（大小随sun_size变化）
+                float sun_spot = max(0.0, pow(dot(ray_dir, normalize(sun_direction)), 256.0 / sun_size));
+                sun_spot = sun_spot * (1.0 + sun_size * 2.0);
+                
+                // 星空效果（仅在夜晚可见）
+                vec3 stars = vec3(0.0);
+                if (night_intensity > 0.0) {
+                    // 生成简单的星空图案
+                    float star_density = 0.5;
+                    float star_threshold = 1.0 - star_density * night_intensity;
+                    
+                    // 使用噪声函数生成星星
+                    vec2 star_pos = texcoords.xy * 10.0;
+                    float star_value = noise(floor(star_pos));
+                    float star_brightness = noise(star_pos);
+                    
+                    if (star_value > star_threshold) {
+                        stars = vec3(star_brightness * 0.8 + 0.2) * night_intensity;
+                    }
+                }
                 
                 // 最终颜色
-                fragColor = sky_color * p3d_ColorScale + vec4(atmos, 0.0) + vec4(sun_spot, sun_spot, sun_spot * 0.7, 0.0);
+                fragColor = sky_color * p3d_ColorScale + vec4(atmos, 0.0) + vec4(sun_spot, sun_spot, sun_spot * 0.7, 0.0) + vec4(stars, 1.0);
             }
             '''
         )
@@ -513,8 +538,101 @@ class AdvancedShaderOptimizer:
         self.last_update_time = current_time
         start_time = time.time()
         
-        # 更新全局时间参数
-        game_time = current_time % 1000.0  # 防止数值过大
+        # 时间系统: 20刻=1秒, 24000刻=1天(20分钟)
+        ticks_per_second = 20
+        day_cycle_ticks = 24000
+        day_cycle_seconds = day_cycle_ticks / ticks_per_second  # 1200秒=20分钟
+        
+        # 获取当前游戏刻数(玩家出生时从0开始)
+        if not hasattr(self, 'game_ticks'):
+            self.game_ticks = 0  # 初始化为0刻(白天开始)
+        else:
+            # 计算自上次更新以来的时间增量(秒)
+            time_delta = current_time - self.last_update_time
+            self.game_ticks = (self.game_ticks + int(time_delta * ticks_per_second)) % day_cycle_ticks
+        
+        # 计算当前周期位置(0.0-1.0)
+        cycle_position = self.game_ticks / day_cycle_ticks
+        sun_angle = cycle_position * 2 * math.pi  # 2π弧度对应完整周期
+        
+        # 太阳方向向量(基于时间阶段的非线性运动)
+        def ease_in_out(t):
+            """缓入缓出函数，使太阳运动更自然"""
+            return 0.5 - 0.5 * math.cos(t * math.pi)
+        
+        # 时间阶段判断及太阳高度计算
+        if 0 <= self.game_ticks < 12000:  # 白天(0-12000刻, 10分钟)
+            # 太阳从日出到日落的平滑运动(0.2π到1.8π弧度)
+            day_progress = self.game_ticks / 12000
+            sun_angle = 0.2 * math.pi + ease_in_out(day_progress) * 1.6 * math.pi
+            sun_height_factor = 1.0
+            phase = 'day'
+        elif 12000 <= self.game_ticks < 13800:  # 日落(12000-13800刻, 1.5分钟)
+            sunset_progress = (self.game_ticks - 12000) / 1800
+            sun_angle = 1.8 * math.pi + sunset_progress * 0.3 * math.pi
+            sun_height_factor = 1.0 - sunset_progress
+            phase = 'sunset'
+        elif 13800 <= self.game_ticks < 22200:  # 夜晚(13800-22200刻, 7分钟)
+            night_progress = (self.game_ticks - 13800) / 8400
+            sun_angle = 2.1 * math.pi + night_progress * 1.8 * math.pi
+            sun_height_factor = 0.0
+            phase = 'night'
+        else:  # 日出(22200-24000刻, 1.5分钟)
+            sunrise_progress = (self.game_ticks - 22200) / 1800
+            sun_angle = 3.9 * math.pi + sunrise_progress * 0.3 * math.pi
+            sun_height_factor = sunrise_progress
+            phase = 'sunrise'
+        
+        # 计算太阳方向向量
+        sun_dir = Vec3(
+            math.cos(sun_angle),
+            math.sin(sun_angle) * 0.8 * sun_height_factor,
+            math.sin(sun_angle) * 0.6 * sun_height_factor
+        ).normalized()
+        
+        # 颜色过渡系统
+        def color_lerp(a, b, t):
+            """颜色线性插值"""
+            return Vec3(
+                a.x + (b.x - a.x) * t,
+                a.y + (b.y - a.y) * t,
+                a.z + (b.z - a.z) * t
+            )
+        
+        # 定义基础颜色
+        day_ambient = Vec3(0.4, 0.4, 0.45)
+        day_fog = Vec3(0.5, 0.6, 0.7)
+        sunset_ambient = Vec3(0.3, 0.15, 0.2)
+        sunset_fog = Vec3(0.4, 0.2, 0.3)
+        night_ambient = Vec3(0.03, 0.03, 0.08)
+        night_fog = Vec3(0.05, 0.05, 0.1)
+        sunrise_ambient = Vec3(0.3, 0.15, 0.25)
+        sunrise_fog = Vec3(0.4, 0.25, 0.35)
+        
+        # 根据时间阶段计算颜色
+        if phase == 'day':
+            ambient_color = day_ambient
+            fog_color = day_fog
+        elif phase == 'sunset':
+            # 日落颜色过渡(白天->日落)
+            t = sunset_progress
+            ambient_color = color_lerp(day_ambient, sunset_ambient, t)
+            fog_color = color_lerp(day_fog, sunset_fog, t)
+        elif phase == 'night':
+            # 夜晚颜色保持
+            ambient_color = night_ambient
+            fog_color = night_fog
+        else:  # sunrise
+            # 日出颜色过渡(夜晚->白天)
+            t = sunrise_progress
+            ambient_color = color_lerp(night_ambient, sunrise_ambient, t)
+            fog_color = color_lerp(night_fog, sunrise_fog, t)
+        
+        # 曙光效果(日出前开始)
+        if 22009 <= self.game_ticks < 22200:
+            dawn_progress = (self.game_ticks - 22009) / (22200 - 22009)
+            ambient_color = color_lerp(night_ambient, sunrise_ambient, dawn_progress * 0.3)
+            fog_color = color_lerp(night_fog, sunrise_fog, dawn_progress * 0.3)
         
         # 更新相机位置
         if camera_position is None and hasattr(camera, 'position'):
@@ -533,20 +651,32 @@ class AdvancedShaderOptimizer:
                     if camera_position:
                         entity.set_shader_input('camera_position', camera_position)
                     
+                    # 设置环境光、雾颜色和光照方向（所有实体通用）
+                    entity.set_shader_input('ambient_color', ambient_color)
+                    entity.set_shader_input('fog_color', fog_color)
+                    entity.set_shader_input('light_direction', sun_dir)
+                    
                     # 特定着色器参数更新
                     if shader_type == 'water':
                         # 可以在这里更新水的特殊参数
                         pass
                     
                     elif shader_type == 'skybox':
-                        # 更新太阳方向（可以基于游戏时间变化）
-                        sun_angle = (game_time / 120.0) % (2 * math.pi)  # 120秒一个周期
-                        sun_dir = Vec3(
-                            math.cos(sun_angle),
-                            math.sin(sun_angle) * 0.8,
-                            math.sin(sun_angle) * 0.6
-                        ).normalized()
+                        # 更新太阳方向
                         entity.set_shader_input('sun_direction', sun_dir)
+                        
+                        # 设置太阳大小（日出日落时变大）
+                        if phase == 'sunset' or phase == 'sunrise':
+                            # 日出日落时太阳大小变化（1.2-1.8倍）
+                            transition_progress = sunset_progress if phase == 'sunset' else sunrise_progress
+                            sun_size = 1.2 + 0.6 * (1.0 - abs(transition_progress - 0.5) * 2.0)
+                        else:
+                            sun_size = 1.0
+                        entity.set_shader_input('sun_size', sun_size)
+                        
+                        # 设置夜晚强度（控制星空可见度）
+                        night_intensity = 1.0 if phase == 'night' else max(0.0, 1.0 - sun_height_factor * 2.0)
+                        entity.set_shader_input('night_intensity', night_intensity)
         
         # 更新统计信息
         self.stats['optimized_entities'] = sum(len(entities) for entities in self.shader_entities.values())

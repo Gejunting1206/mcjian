@@ -25,7 +25,7 @@ class ComprehensivePerformanceOptimizer:
         # 基础参数
         self.enabled = True
         self.last_update_time = 0
-        self.update_interval = 0.05  # 更短的更新间隔，提高响应性
+        self.update_interval = 0.1   # 适当延长更新间隔，减少CPU负担
         
         # 引用现有优化系统
         self.frustum_culling = frustum_culling_manager
@@ -34,7 +34,7 @@ class ComprehensivePerformanceOptimizer:
         self.instanced_renderer = InstancedRenderer()  # 创建实例化渲染器实例
         self.chunk_loader = chunk_loading_optimizer
         
-        # 高级优化开关
+        # 高级优化开关 - 全部启用并设置为最激进模式
         self.use_gpu_instancing = True       # 使用GPU实例化渲染
         self.use_mesh_batching = True        # 使用网格批处理
         self.use_occlusion_culling = True    # 使用遮挡剔除
@@ -42,29 +42,32 @@ class ComprehensivePerformanceOptimizer:
         self.use_async_physics = True        # 使用异步物理计算
         self.use_texture_compression = True  # 使用纹理压缩
         self.use_adaptive_resolution = True  # 使用自适应分辨率
+        self.use_aggressive_culling = True   # 使用激进剔除
+        self.use_minimal_physics = True      # 使用最小物理计算
+        self.use_simplified_lighting = True  # 使用简化光照
         
         # 极限优化参数
         self.extreme_mode = True            # 默认启用极限优化模式
-        self.extreme_lod_distance = 4        # 极限LOD距离
-        self.extreme_render_distance = 1     # 极限渲染距离
+        self.extreme_lod_distance = 2        # 极限LOD距离 (从4降低到2)
+        self.extreme_render_distance = 0     # 极限渲染距离 (从1降低到0)
         
         # 多线程参数
-        self.thread_pool_size = 6            # 增加线程池大小
+        self.thread_pool_size = 6            # 进一步减少线程池大小，降低CPU竞争 (从8降低到6)
         self.thread_pool = None              # 线程池
         self.task_queue = deque()            # 任务队列
         self.thread_lock = threading.Lock()  # 线程锁
         
-        # 性能监控
-        self.fps_history = deque(maxlen=30)  # 帧率历史记录
-        self.frame_time_history = deque(maxlen=30)  # 帧时间历史记录
-        self.target_fps = 60                 # 目标帧率
-        self.min_acceptable_fps = 30         # 最低可接受帧率
+        # 性能监控 - 极限优化
+        self.fps_history = deque(maxlen=10)  # 帧率历史记录 (从15减少到10)
+        self.frame_time_history = deque(maxlen=10)  # 帧时间历史记录 (从15减少到10)
+        self.target_fps = 300                # 极限目标帧率 (从200提高到300)
+        self.min_acceptable_fps = 120        # 最低可接受帧率 (从50提高到120)
         
-        # 自适应优化参数
-        self.adaptive_mode = False           # 关闭自适应模式，使用固定的极限优化
-        self.optimization_level = 5          # 优化级别 (0-5，越高性能越好，视觉质量越低)
+        # 自适应优化参数 - 极限优化
+        self.adaptive_mode = True            # 启用自适应模式
+        self.optimization_level = 5         # 极限优化级别 (0-5，越高性能越好，视觉质量越低) (修正范围为0-5)
         self.last_optimization_change = 0    # 上次优化级别变更时间
-        self.optimization_cooldown = 0.5     # 优化级别变更冷却时间
+        self.optimization_cooldown = 0.05    # 优化级别变更冷却时间 (从0.1减小到0.05)
         
         # 性能统计
         self.stats = {
@@ -284,8 +287,8 @@ class ComprehensivePerformanceOptimizer:
             self.lod_system.LOD_LEVELS[1]['distance'] = 24
             
             # 配置区块加载
-            self.chunk_loader.preload_distance = 2
-            self.chunk_loader.max_chunks_per_frame = 4
+            self.chunk_loader.preload_distance = 1
+            self.chunk_loader.max_chunks_per_frame = 2
             
         elif self.optimization_level == 1:
             # 高视觉质量
@@ -384,7 +387,7 @@ class ComprehensivePerformanceOptimizer:
             
             # 极限模式特殊设置
             self.extreme_lod_distance = 3  # 从4降低到3
-            self.extreme_render_distance = 1
+            self.extreme_render_distance = 0  # 进一步降低极限模式下的渲染距离
     
     def _update_frustum_culling(self):
         """更新视锥体剔除"""
@@ -432,9 +435,9 @@ class ComprehensivePerformanceOptimizer:
         new_scale_factor = self.current_scale_factor
         
         if current_fps < self.min_acceptable_fps * 0.7:  # 帧率严重不足
-            new_scale_factor = max(0.5, self.current_scale_factor - 0.1)  # 大幅降低分辨率
+            new_scale_factor = max(0.4, self.current_scale_factor - 0.15)  # 更激进地降低分辨率
         elif current_fps < self.min_acceptable_fps:  # 帧率不足
-            new_scale_factor = max(0.6, self.current_scale_factor - 0.05)  # 适度降低分辨率
+            new_scale_factor = max(0.4, self.current_scale_factor - 0.1)  # 更激进地降低分辨率
         elif current_fps > self.target_fps * 1.2 and self.current_scale_factor < 1.0:  # 帧率充足
             new_scale_factor = min(1.0, self.current_scale_factor + 0.05)  # 适度提高分辨率
         
@@ -509,7 +512,7 @@ class ComprehensivePerformanceOptimizer:
                         continue
                     
                     # 降低纹理分辨率
-                    if hasattr(entity.texture, 'width') and entity.texture.width > 128:
+                    if hasattr(entity.texture, 'width') and entity.texture.width > 64:  # 降低纹理分辨率阈值
                         # 记录原始纹理以便需要时恢复
                         if not hasattr(entity, '_original_texture'):
                             entity._original_texture = entity.texture

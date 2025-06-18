@@ -38,7 +38,7 @@ class FrustumCuller:
         self.camera_forward = Vec3(0, 0, -1)
         self.fov = 90
         self.near_plane = 0.1
-        self.far_plane = 100.0
+        self.far_plane = 80.0  # 从100.0减少到80.0，减小视锥体范围
         self.aspect_ratio = 16/9
     
     def update_frustum(self, camera_pos: Vec3, camera_rotation: Vec3, fov: float, aspect: float, near: float, far: float):
@@ -106,19 +106,15 @@ class FrustumCuller:
     def is_aabb_in_frustum(self, min_point: Vec3, max_point: Vec3) -> bool:
         """检查AABB包围盒是否与视锥体相交"""
         # 检查包围盒的8个顶点
+        # 只检查3个最远顶点而非全部8个
         corners = [
-            Vec3(min_point.x, min_point.y, min_point.z),
-            Vec3(max_point.x, min_point.y, min_point.z),
-            Vec3(min_point.x, max_point.y, min_point.z),
-            Vec3(max_point.x, max_point.y, min_point.z),
-            Vec3(min_point.x, min_point.y, max_point.z),
-            Vec3(max_point.x, min_point.y, max_point.z),
+            Vec3(max_point.x, max_point.y, max_point.z),
             Vec3(min_point.x, max_point.y, max_point.z),
-            Vec3(max_point.x, max_point.y, max_point.z)
+            Vec3(max_point.x, min_point.y, max_point.z)
         ]
         
         for plane_point, plane_normal in self.frustum_planes:
-            # 如果所有顶点都在平面的外侧，则包围盒完全在视锥体外
+            # 如果所有顶点都在平面的外侧，则包围盒完全在视锥体内
             all_outside = True
             for corner in corners:
                 distance = (corner - plane_point).dot(plane_normal)
@@ -143,6 +139,10 @@ class OcclusionCuller:
     
     def is_face_occluded(self, face: BlockFace, camera_pos: Vec3) -> bool:
         """检查面片是否被遮挡 - 优化的中空方块渲染"""
+        # 增加距离阈值判断，远处方块不进行遮挡检查
+        if face.distance_to_camera > 60:
+            return True
+
         face_center = self._get_face_center(face)
         direction_to_camera = (camera_pos - face_center).normalized()
         
@@ -313,12 +313,29 @@ class MeshSplittingRenderer:
         
         self.visible_faces.clear()
         
-        # 对每个面片进行剔除测试
+        # 对每个面片进行剔除测试 - 优化：先进行距离剔除，减少后续计算
         for position_key, faces in self.block_faces.items():
+            # 计算区块中心到摄像机的距离
+            chunk_pos = Vec3(position_key[0], position_key[1], position_key[2])
+            chunk_distance = distance(chunk_pos, camera_pos)
+            
+            # 距离剔除 - 远处区块直接跳过详细计算
+            if chunk_distance > 100.0:  # 增加距离阈值
+                for face in faces:
+                    face.is_visible = False
+                    self.stats['culled_faces'] += 1
+                continue
+            
             for face in faces:
                 # 计算到摄像机的距离
                 face_center = self.occlusion_culler._get_face_center(face)
                 face.distance_to_camera = distance(face_center, camera_pos)
+                
+                # 距离剔除 - 优先快速剔除
+                if face.distance_to_camera > 80.0:  # 调整距离阈值
+                    face.is_visible = False
+                    self.stats['culled_faces'] += 1
+                    continue
                 
                 # 视锥体剔除
                 face_min = Vec3(
@@ -383,16 +400,59 @@ class MeshSplittingRenderer:
         # 创建实例化批次
         self.create_instanced_batches()
         
-        # 渲染每个批次
+        # 先渲染不透明面片，再渲染透明面片
+        # 分离透明和不透明面片
+        opaque_batches = {}
+        transparent_batches = {}
+        
         for material_key, faces in self.instanced_batches.items():
             if not faces:
                 continue
+                
+            # 检查第一个面片是否为透明材质
+            is_transparent_batch = False
+            if faces and len(faces) > 0:
+                block_type = self._get_block_type_from_id(faces[0].block_id)
+                is_transparent_batch = block_type == 'leaf'
             
-            # 按距离排序（远到近，用于透明度渲染）
-            faces.sort(key=lambda f: f.distance_to_camera, reverse=True)
+            if is_transparent_batch:
+                transparent_batches[material_key] = faces
+            else:
+                opaque_batches[material_key] = faces
+        
+        # 优化：限制每帧渲染的面片数量，防止卡顿
+        max_faces_per_frame = 1000  # 每帧最多渲染1000个面片
+        rendered_faces = 0
+        
+        # 1. 先渲染不透明面片（从近到远）
+        for material_key, faces in opaque_batches.items():
+            # 按距离排序（近到远，提高性能）
+            faces.sort(key=lambda f: f.distance_to_camera, reverse=False)
+            
+            # 限制每批次渲染的面片数量
+            faces_to_render = faces[:max_faces_per_frame - rendered_faces] if rendered_faces < max_faces_per_frame else []
+            rendered_faces += len(faces_to_render)
             
             # 为每个面片创建或更新渲染实体
-            for face in faces:
+            for face in faces_to_render:
+                self._render_single_face(face)
+                self.stats['draw_calls'] += 1
+        
+        # 如果已经达到最大面片数，跳过透明面片渲染
+        if rendered_faces >= max_faces_per_frame:
+            return
+        
+        # 2. 再渲染透明面片（从远到近）
+        for material_key, faces in transparent_batches.items():
+            # 按距离排序（远到近，正确的透明度渲染）
+            faces.sort(key=lambda f: f.distance_to_camera, reverse=True)
+            
+            # 限制每批次渲染的面片数量
+            faces_to_render = faces[:max_faces_per_frame - rendered_faces] if rendered_faces < max_faces_per_frame else []
+            rendered_faces += len(faces_to_render)
+            
+            # 为每个面片创建或更新渲染实体
+            for face in faces_to_render:
                 self._render_single_face(face)
                 self.stats['draw_calls'] += 1
     
@@ -445,8 +505,14 @@ class MeshSplittingRenderer:
         entity.color = block_colors.get(block_type, color.white)
         
         # 设置面片特定属性
-        entity.double_sided = False  # 单面渲染，提高性能
-        entity.alpha = 1.0  # 完全不透明
+        entity.double_sided = block_type == 'leaf'  # 树叶启用双面渲染
+        
+        # 设置透明度 - 树叶方块半透明
+        if block_type == 'leaf':
+            entity.alpha = 0.8  # 树叶设置为半透明
+            entity.always_on_top = False  # 不强制在顶层渲染
+        else:
+            entity.alpha = 1.0  # 其他方块完全不透明
         
     def _create_face_mesh(self, face: BlockFace):
         """为单个面片创建网格数据"""
@@ -541,7 +607,7 @@ class MeshSplittingRenderer:
             adjacent_key = (int(adjacent_pos.x), int(adjacent_pos.y), int(adjacent_pos.z))
             
             # 如果相邻位置有方块，则该面片应该被隐藏（中空效果）
-            face.is_occluded = adjacent_key in self.block_faces
+            face.is_occluded = adjacent_key in self.block_positions
             
             # 更新渲染实体的可见性
             face_hash = hash((face.position.x, face.position.y, face.position.z, face.face_type.value))

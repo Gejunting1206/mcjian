@@ -58,7 +58,7 @@ class Hotbar:
     
     def update_selection(self, slot_index):
         """更新选中的槽位"""
-        if 0 <= slot_index < len(self.collected_blocks):
+        if 0 <= slot_index < self.max_slots:
             self.selected_slot = slot_index
             # 更新选中框位置
             self.selection_highlight.position = self._get_slot_position(self.selected_slot)
@@ -67,35 +67,41 @@ class Hotbar:
     
     def get_selected_block_id(self):
         """获取当前选中的方块ID"""
-        if not self.collected_blocks:
-            return None  # 如果没有收集任何方块，返回None
-        return self.collected_blocks[self.selected_slot]
+        if self.collected_blocks and self.selected_slot < len(self.collected_blocks):
+            return self.collected_blocks[self.selected_slot]
+        return None  # 空槽位返回None
     
     def input(self, key):
         """处理键盘输入，切换选中的槽位"""
-        # 如果物品栏为空，则不处理任何输入
-        if not self.collected_blocks:
-            return False
+        # 允许空物品栏处理输入
+        # if not self.collected_blocks:
+        #     return False
             
         # 数字键1-9选择对应槽位
         if key in ['1', '2', '3', '4', '5', '6', '7', '8', '9']:
             slot = int(key) - 1  # 转换为0-8的索引
-            if slot < len(self.collected_blocks):
-                self.update_selection(slot)
-                return True
+            self.update_selection(slot)
+            return True
         
         # 鼠标滚轮切换槽位
         if key == 'scroll up':
-            if len(self.collected_blocks) > 0:
-                new_slot = (self.selected_slot - 1) % len(self.collected_blocks)
-                self.update_selection(new_slot)
-                return True
+            new_slot = (self.selected_slot - 1) % self.max_slots
+            self.update_selection(new_slot)
+            return True
         elif key == 'scroll down':
-            if len(self.collected_blocks) > 0:
-                new_slot = (self.selected_slot + 1) % len(self.collected_blocks)
-                self.update_selection(new_slot)
-                return True
+            new_slot = (self.selected_slot + 1) % self.max_slots
+            self.update_selection(new_slot)
+            return True
         
+        # 原有键盘和滚轮处理逻辑
+        if key == 'middle mouse down':
+            # 获取选中的方块ID逻辑需要与主游戏逻辑配合
+            # 假设通过某种方式获取到block_id
+            block_id = get_selected_block_id_from_world()  
+            self.collect_block(block_id)
+            return True
+
+        # 原有键盘和滚轮处理逻辑
         return False
         
     def collect_block(self, block_id):
@@ -130,6 +136,86 @@ class Hotbar:
         # 检查物品栏是否已满
         if len(self.collected_blocks) >= self.max_slots:
             # 如果已满，替换当前选中的方块
+            old_block_id = self.collected_blocks[self.selected_slot]
+            # 更新映射
+            del self.block_id_to_slot[old_block_id]
+            self.collected_blocks[self.selected_slot] = block_id
+            self.block_id_to_slot[block_id] = self.selected_slot
+            
+            # 更新图标
+            if self.selected_slot < len(self.item_icons):
+                # 更新现有图标
+                self.item_icons[self.selected_slot].texture = self.block_textures[block_id]
+            else:
+                # 创建新图标
+                icon = Entity(
+                    parent=self.parent,
+                    model='block',
+                    texture=self.block_textures[block_id],
+                    scale=(0.02, 0.02, 0.02),  # 增大方块大小
+                    position=self._get_slot_position(self.selected_slot),
+                    rotation=(-25, -45, -25),  # 调整旋转角度以更好地展示方块
+                    visible=True,  # 默认可见
+                    is_ui=True,  # 标记为UI元素
+                )
+                self.item_icons.append(icon)
+        else:
+            # 添加新方块到物品栏
+            slot = len(self.collected_blocks)
+            self.collected_blocks.append(block_id)
+            self.block_id_to_slot[block_id] = slot
+            
+            # 创建新图标
+            icon = Entity(
+                parent=self.parent,
+                model='block',
+                texture=self.block_textures[block_id],
+                scale=(0.02, 0.02, 0.02),  # 增大方块大小
+                position=self._get_slot_position(slot),
+                rotation=(-25, -45, -25),  # 调整旋转角度以更好地展示方块
+                visible=True,  # 默认可见
+                is_ui=True,  # 标记为UI元素
+            )
+            self.item_icons.append(icon)
+            
+            # 如果这是第一个方块，选中它
+            if len(self.collected_blocks) == 1:
+                self.update_selection(0)
+        
+        return True
+
+    def _insert_block(self, slot, block_id):
+        # 插入到指定槽位逻辑
+        if block_id in self.block_id_to_slot:
+            self.update_selection(self.block_id_to_slot[block_id])
+            return False
+
+        # 从当前选中槽位开始查找可用位置
+        start_slot = self.selected_slot
+        for i in range(self.max_slots):
+            current_slot = (start_slot + i) % self.max_slots
+            
+            # 找到空槽位
+            if current_slot >= len(self.collected_blocks):
+                self._insert_block(current_slot, block_id)
+                return True
+                
+            # 槽位已被占用但可替换
+            if current_slot == self.max_slots - 1:
+                self._replace_block(current_slot, block_id)
+                return True
+
+        # 默认替换当前槽位（理论上不会执行到这里）
+        self._replace_block(self.selected_slot, block_id)
+        return True
+
+    def _replace_block(self, slot, block_id):
+        # 替换指定槽位逻辑
+        if block_id in self.block_id_to_slot:
+            self.update_selection(self.block_id_to_slot[block_id])
+            return False
+
+        if len(self.collected_blocks) >= self.max_slots:
             old_block_id = self.collected_blocks[self.selected_slot]
             # 更新映射
             del self.block_id_to_slot[old_block_id]

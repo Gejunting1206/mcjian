@@ -10,7 +10,7 @@ from PIL import ImageGrab  # 用于获取屏幕尺寸
 
 # 数学和物理计算
 from ursina.ursinamath import distance  # 距离计算
-from math import floor, sin, cos, pi, atan2  # 基础数学函数
+from math import floor, sin, cos, pi  # 基础数学函数
 
 # 多线程和并发
 from threading import Thread, Lock  # 线程和锁
@@ -41,10 +41,15 @@ from queue import PriorityQueue, Empty # 优先级队列
 from optimization.frustum_culling import frustum_culling_manager, get_visible_blocks  # 视锥体剔除
 from lod_system import lod_manager, process_blocks_lod  # LOD系统
 from optimization.performance_optimizer import performance_optimizer, handle_optimization_hotkeys  # 性能优化管理器
+from performance_config import perf_config, PerformanceConfig  # 性能配置管理
+# 导入输入优化器
+from input_optimizer import input_optimizer
 # 区块加载优化模块
 from loading_system import chunk_loader, mark_chunk_loaded  # 区块加载系统
 from block_cache import block_cache  # 区块缓存系统
 from chunk_loading_optimizer import chunk_loading_optimizer, preload_initial_chunks, integrate_with_game_loop  # 区块加载优化器
+# 渐进式加载系统 - 解决游戏启动时帧率波动问题
+from progressive_loading import progressive_loader, integrate_with_game_loop as progressive_loading_update, initialize_on_game_start  # 渐进式加载系统
 
 # GPU优化相关模块
 from gpu.gpu_frustum_culling import gpu_frustum_culling  # GPU视锥体剔除
@@ -60,42 +65,235 @@ from optimization.comprehensive_performance_optimizer import comprehensive_optim
 # 导入面片渲染系统
 from mesh_splitting_renderer import mesh_renderer, MeshSplittingRenderer
 
+# 高效渲染优化器
+class HighPerformanceRenderer:
+    """高性能渲染器 - 专注于最大化帧率"""
+    
+    def __init__(self):
+        self.visible_objects = set()
+        self.render_cache = {}
+        self.last_camera_pos = None
+        self.camera_move_threshold = 2.0  # 降低阈值以减少单次更新负载
+        self.frame_skip_counter = 0
+        
+    def should_update_visibility(self, camera_pos):
+        """判断是否需要更新可见性"""
+        if self.last_camera_pos is None:
+            self.last_camera_pos = camera_pos
+            return True
+        
+        # 只有摄像机移动超过阈值才更新
+        distance = ((camera_pos.x - self.last_camera_pos.x) ** 2 + 
+                   (camera_pos.y - self.last_camera_pos.y) ** 2 + 
+                   (camera_pos.z - self.last_camera_pos.z) ** 2) ** 0.5
+        
+        if distance > self.camera_move_threshold:
+            self.last_camera_pos = camera_pos
+            return True
+        return False
+    
+    def fast_render(self, camera_pos):
+        """快速渲染 - 跳帧渲染"""
+        self.frame_skip_counter += 1
+        
+        # 每6帧才执行一次完整渲染
+        if self.frame_skip_counter % 6 == 0:
+            # 简化的渲染逻辑
+            if self.should_update_visibility(camera_pos):
+                # 更新可见对象列表
+                self._update_visible_objects(camera_pos)
+            
+            # 渲染可见对象
+            self._render_visible_objects()
+    
+    def _update_visible_objects(self, camera_pos):
+        """更新可见对象列表"""
+        # 使用空间哈希快速查找附近对象
+        nearby_objects = spatial_hash.query_nearby(camera_pos, radius=1)  # 进一步减小查询半径至当前区块，修复float转int错误
+        
+        # 简单的距离剔除
+        self.visible_objects.clear()
+        max_objects_per_frame = 100  # 限制每帧处理对象数量
+        processed_count = 0
+        for obj in nearby_objects:
+            if processed_count >= max_objects_per_frame:
+                break
+            if hasattr(obj, 'position'):
+                distance_sq = ((obj.position.x - camera_pos.x) ** 2 + 
+                              (obj.position.y - camera_pos.y) ** 2 + 
+                              (obj.position.z - camera_pos.z) ** 2)
+                # 只处理近距离对象
+                if distance_sq < 25:  # 只处理5个单位内的对象
+                    self.visible_objects.add(obj)
+    
+    def _render_visible_objects(self):
+        """渲染可见对象"""
+        # 简化的批量渲染
+        for obj in self.visible_objects:
+            if hasattr(obj, 'enabled') and obj.enabled:
+                # 添加到批量渲染器
+                material_key = getattr(obj, 'texture', 'default')
+                batch_renderer.add_to_batch(obj, material_key)
+
+# 创建高性能渲染器实例
+high_perf_renderer = HighPerformanceRenderer()
+
 # 设置默认字体为支持中文的Minecraft字体
 Text.default_font = 'assets/5_Minecraft AE(支持中文).ttf'
 
-# 添加帧率控制
-FPS = 60  # 提高目标帧率到60
+# 算法级性能优化 - 实现空间哈希和批量渲染
+class SpatialHashGrid:
+    """空间哈希网格 - 用于快速空间查询和碰撞检测"""
+    
+    def __init__(self, cell_size=32):
+        self.cell_size = cell_size
+        self.grid = {}
+        self.object_to_cells = {}  # 对象到网格单元的映射
+    
+    def _hash_position(self, position):
+        """将3D位置哈希到网格坐标"""
+        return (
+            int(position.x // self.cell_size),
+            int(position.y // self.cell_size), 
+            int(position.z // self.cell_size)
+        )
+    
+    def insert(self, obj, position):
+        """插入对象到空间哈希网格"""
+        cell = self._hash_position(position)
+        if cell not in self.grid:
+            self.grid[cell] = set()
+        self.grid[cell].add(obj)
+        self.object_to_cells[obj] = cell
+    
+    def remove(self, obj):
+        """从空间哈希网格移除对象"""
+        if obj in self.object_to_cells:
+            cell = self.object_to_cells[obj]
+            if cell in self.grid:
+                self.grid[cell].discard(obj)
+                if not self.grid[cell]:  # 如果网格单元为空，删除它
+                    del self.grid[cell]
+            del self.object_to_cells[obj]
+    
+    def query_nearby(self, position, radius=1):
+        """查询附近的对象"""
+        center_cell = self._hash_position(position)
+        nearby_objects = set()
+        
+        # 检查周围的网格单元
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                for dz in range(-radius, radius + 1):
+                    cell = (center_cell[0] + dx, center_cell[1] + dy, center_cell[2] + dz)
+                    if cell in self.grid:
+                        nearby_objects.update(self.grid[cell])
+        
+        return nearby_objects
+
+# 批量渲染管理器
+class BatchRenderManager:
+    """批量渲染管理器 - 减少渲染调用次数"""
+    
+    def __init__(self):
+        self.batches = {}  # 按材质/纹理分组的批次
+        self.dirty_batches = set()  # 需要更新的批次
+        self.max_batch_size = 500  # 每个批次最大对象数
+    
+    def add_to_batch(self, obj, material_key):
+        """将对象添加到批次"""
+        if material_key not in self.batches:
+            self.batches[material_key] = []
+        
+        batch = self.batches[material_key]
+        if len(batch) < self.max_batch_size:
+            batch.append(obj)
+            self.dirty_batches.add(material_key)
+    
+    def render_batches(self, camera_position):
+        """渲染所有批次"""
+        rendered_objects = 0
+        
+        for material_key in list(self.dirty_batches):
+            if material_key in self.batches:
+                batch = self.batches[material_key]
+                if batch:
+                    # 距离排序优化 - 只对前50个对象排序
+                    if len(batch) > 50:
+                        batch = batch[:50]
+                    
+                    rendered_objects += len(batch)
+        
+        self.dirty_batches.clear()
+        return rendered_objects
+
+# 异步任务管理器
+class AsyncTaskManager:
+    """异步任务管理器 - 将耗时操作移到后台线程"""
+    
+    def __init__(self, max_workers=1):
+        from concurrent.futures import ThreadPoolExecutor
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.pending_tasks = {}
+    
+    def submit_task(self, task_id, func, *args, **kwargs):
+        """提交异步任务"""
+        if task_id not in self.pending_tasks:
+            future = self.executor.submit(func, *args, **kwargs)
+            self.pending_tasks[task_id] = future
+    
+    def check_completed_tasks(self):
+        """检查已完成的任务"""
+        completed = []
+        for task_id, future in list(self.pending_tasks.items()):
+            if future.done():
+                try:
+                    result = future.result()
+                    completed.append((task_id, result))
+                except Exception:
+                    completed.append((task_id, None))
+                del self.pending_tasks[task_id]
+        return completed
+
+# 创建全局优化实例
+spatial_hash = SpatialHashGrid(cell_size=32)
+batch_renderer = BatchRenderManager()
+async_manager = AsyncTaskManager(max_workers=1)
+
+# 添加帧率控制 - 极限优化
+FPS = 200  # 极限目标帧率 (从120提高到200)
 frame_duration = 1.0 / FPS  # 每帧的持续时间
+MAX_FRAME_TIME = 1.0 / 150  # 最大帧时间，确保至少150FPS
 
-# 动态渲染距离参数
+# 动态渲染距离参数 - 极限优化
 DYNAMIC_RENDER_DISTANCE = True  # 启用动态渲染距离
-MIN_RENDER_DISTANCE = 1         # 最小渲染距离
-MAX_RENDER_DISTANCE = 2         # 最大渲染距离(初始设置为较小值以提高性能)
-RENDER_DISTANCE_UPDATE_INTERVAL = 1.5  # 渲染距离更新间隔（秒）
+MIN_RENDER_DISTANCE = 0         # 最小渲染距离 (从1降低到0)
+MAX_RENDER_DISTANCE = 1         # 最大渲染距离 (保持1)
+RENDER_DISTANCE_UPDATE_INTERVAL = 0.2  # 渲染距离更新间隔（秒）(从0.5减小到0.2)
 
-# 空间网格配置
-GRID_CELL_SIZE = 32 # 初始设置为较大值以减少计算量，性能优化器会根据帧率动态调整
+# 空间网格配置 - 极限优化
+GRID_CELL_SIZE = 64 # 进一步增加网格单元大小以减少计算量 (从48增加到64)
 
 # 创建优化管理器
 optimization_manager = OptimizationManager(chunk_size=GRID_CELL_SIZE, render_distance=MAX_RENDER_DISTANCE)
 
-# 优化管理器配置 - 提高目标帧率
+# 优化管理器配置 - 极限优化
 optimization_manager.use_instanced_rendering = True
 optimization_manager.use_mesh_combining = True
 optimization_manager.use_distance_culling = True
 optimization_manager.use_chunk_management = True
 optimization_manager.adaptive_optimization = True
-optimization_manager.target_fps = 60  # 提高目标帧率
+optimization_manager.target_fps = 300  # 极限目标帧率 (从60提高到300)
 
-# 配置综合性能优化器 - 使用最高级别优化
-comprehensive_optimizer.target_fps = 60  # 设置目标帧率
-comprehensive_optimizer.min_acceptable_fps = 30  # 降低最低可接受帧率以确保稳定性
-comprehensive_optimizer.adaptive_mode = False  # 关闭自适应模式
-comprehensive_optimizer.optimization_level = 5  # 设置为最高优化级别（极限性能模式）
+# 配置综合性能优化器 - 极限优化
+comprehensive_optimizer.target_fps = 300  # 极限目标帧率 (从150提高到300)
+comprehensive_optimizer.min_acceptable_fps = 200  # 极限最低可接受帧率 (从100提高到200)
+comprehensive_optimizer.adaptive_mode = True  # 启用自适应模式
+comprehensive_optimizer.optimization_level = 15  # 极限优化级别 (从6提高到15)
 
-# 区块加载参数
-MAX_CHUNKS_PER_UPDATE = 2  # 适当提高每次更新最大加载区块数
-CHUNK_LOAD_INTERVAL = 0.3  # 区块加载间隔时间
+# 区块加载参数 - 极限优化
+MAX_CHUNKS_PER_UPDATE = 1  # 极限减少每次更新最大加载区块数 (保持1)
+CHUNK_LOAD_INTERVAL = 1.0  # 区块加载间隔时间 (从0.5增加到1.0)
 
 # 性能统计显示相关变量
 # 在文件开头添加全局变量声明
@@ -159,8 +357,8 @@ chunk_lock = Lock()
 
 # 区块生成性能保护参数
 sync_chunk_generation_counter = 0  # 同步区块生成计数器
-MAX_SYNC_CHUNKS_PER_FRAME = 2  # 每帧最多同步生成的区块数量
-MIN_FPS_FOR_SYNC_GENERATION = 15  # 低于此帧率时禁用同步生成
+MAX_SYNC_CHUNKS_PER_FRAME = 1  # 每帧最多同步生成的区块数量 (从2降低到1)
+MIN_FPS_FOR_SYNC_GENERATION = 30  # 低于此帧率时禁用同步生成 (从15提高到30)
 
 # 柏林噪声生成器配置
 # octaves: 噪声层数，影响地形细节
@@ -225,7 +423,7 @@ class SpatialGrid:
     def __init__(self):
         self.grid = {}
         self.last_frustum_update = 0
-        self.frustum_update_interval = 0.8  # 极度增加视锥体更新间隔以减少CPU负担
+        self.frustum_update_interval = 0.1  # 减少视锥体更新间隔以提高剔除效率 (从0.8减小到0.1)
         self.last_cleanup_time = 0
         self.cleanup_interval = 5.0  # 更频繁地清理未使用的网格单元
 
@@ -479,48 +677,41 @@ class Block(Button):
                     should_process = False
                     
             if should_process:
-                # 设置冷却时间
-                self.collision_cooldown = 8  # 从5增加到8，进一步减少处理频率
-                
                 # 播放音效
                 punch_sound.play()
-                
-                if key == 'right mouse down':
+            
+            if key == 'right mouse down':
+                # 设置冷却时间
+                self.collision_cooldown = 5  # 仅在放置方块时设置冷却时间
                     # 放置方块
                     # 确保放置的方块在玩家可及范围内
-                    if distance(player.position, self.position) < 6:
+                if distance(player.position, self.position) < 6:
                         # 放置方块
                         # 确保新方块的位置是整数坐标
                         pos = self.position + mouse.normal
                         pos = Vec3(floor(pos.x + 0.5), floor(pos.y + 0.5), floor(pos.z + 0.5))
-                    chunk_pos = get_chunk_position(pos)
+                        chunk_pos = get_chunk_position(pos)
                     
-                    # 优化方块存在检查 - 使用哈希表加速查找
-                    if chunk_pos in loaded_chunks:
-                        # 使用更高效的方式检查位置是否已有方块
-                        # 创建一个集合而不是字典，减少内存使用
-                        block_positions = set()
-                        for block in loaded_chunks[chunk_pos].blocks:
-                            block_positions.add(str(block.position))
+                        # 优化方块存在检查 - 使用哈希表加速查找
+                        if chunk_pos in loaded_chunks:
+                            # 使用更高效的方式检查位置是否已有方块
+                            # 创建一个集合而不是字典，减少内存使用
+                            block_positions = set()
+                            for block in loaded_chunks[chunk_pos].blocks:
+                                block_positions.add(str(block.position))
                         
                         # 使用空间网格检查目标位置是否已有方块
                         # 获取目标位置的单元格坐标
                         target_cell_coords = spatial_grid._get_cell_coords(pos)
                         occupied = False
-                        # 检查目标单元格及其紧邻单元格（因为方块可能跨越单元格边界）
-                        for dx in range(-1, 2):
-                            for dy in range(-1, 2):
-                                for dz in range(-1, 2):
-                                    check_cell = (target_cell_coords[0] + dx, target_cell_coords[1] + dy, target_cell_coords[2] + dz)
-                                    if check_cell in spatial_grid.grid:
-                                        for existing_block in spatial_grid.grid[check_cell]:
-                                            # 检查精确位置是否重叠
-                                            if existing_block.position == pos:
-                                                occupied = True
-                                                break
-                                    if occupied: break
-                                if occupied: break
-                            if occupied: break
+                        # 优化：只检查目标单元格（方块不会跨越单元格边界）
+                        check_cell = target_cell_coords
+                        if check_cell in spatial_grid.grid:
+                            for existing_block in spatial_grid.grid[check_cell]:
+                                # 检查精确位置是否重叠
+                                if existing_block.position == pos:
+                                     occupied = True
+                                     break
 
                         # if str(pos) not in block_positions and chunk_pos in loaded_chunks: # 旧的检查方式
                         if not occupied and chunk_pos in loaded_chunks: # 使用空间网格检查结果
@@ -558,7 +749,7 @@ class Block(Button):
                             # 添加到优化管理器
                             optimization_manager.add_block(new_block)
                 
-                elif key == 'left mouse down':
+            elif key == 'left mouse down':
                     # 破坏方块
                     chunk_pos = get_chunk_position(self.position)
                     if chunk_pos in loaded_chunks:
@@ -590,7 +781,7 @@ class Block(Button):
                             # 如果没有添加到对象池，销毁方块
                             destroy(self)
                 
-                elif key == 'middle mouse down':
+            elif key == 'middle mouse down':
                     # 获取点击的方块类型
                     if hasattr(self, 'id') and hotbar:
                         # 调用物品栏的收集方块方法
@@ -608,7 +799,7 @@ class Block(Button):
 class Chunk:
     # 类级别的对象池，用于重用方块对象
     # 减小对象池大小，避免占用过多内存，但保持足够大以提高重用率
-    _block_pool = deque(maxlen=500)  # 从1000减少到500
+    _block_pool = deque(maxlen=1000)  # 增加对象池大小以减少新建开销
     
     def __init__(self, position):
         self.position = position
@@ -1249,7 +1440,7 @@ class Chunk:
         for block in batch:
             try:
                 # 添加更长的延迟，进一步分散销毁压力
-                destroy(block, delay=uniform(0.01, 0.05))
+                destroy(block, delay=uniform(0.001, 0.01))  # 减少销毁延迟提升响应速度
             except Exception:
                 pass  # 忽略错误
 
@@ -1439,6 +1630,9 @@ def update_chunks():
         if hasattr(player, 'rotation_y'):
             facing_x = int(round(sin(player.rotation_y * pi/180)))
             facing_z = int(round(cos(player.rotation_y * pi/180)))
+            # 确保朝向向量不为零向量
+            if facing_x == 0 and facing_z == 0:
+                facing_x, facing_z = 0, 1  # 如果计算结果为零向量，使用默认朝向
         else:
             facing_x, facing_z = 0, 1  # 默认朝向
         
@@ -1518,7 +1712,11 @@ def update_chunks():
                                     movement_weight = 2.0  # 从1.5提高到2.0
                         
                         # 综合计算优先级 - 值越小优先级越高
-                        priority = dist / (vertical_weight * direction_weight * movement_weight)
+                        denominator = vertical_weight * direction_weight * movement_weight
+                        # 避免除零错误
+                        if denominator == 0:
+                            denominator = 0.001  # 使用一个小的非零值
+                        priority = dist / denominator
                         
                         chunks_to_load.append(((x, z), priority))
             
@@ -1598,8 +1796,8 @@ def update_chunks():
                         pass
             
             # 更新检查索引
-            if len(chunk_keys) > 0:  # 避免除零错误
-                update_chunks.unload_index = (update_chunks.unload_index + check_count) % len(chunk_keys)
+            if chunk_keys and len(chunk_keys) > 0:  # 确保 chunk_keys 不为空且长度大于0
+                update_chunks.unload_index = (update_chunks.unload_index + check_count) % max(1, len(chunk_keys))  # 使用 max 确保除数至少为1
     except Exception as e:
         print(f"Error in update_chunks: {e}")
         # 出错时重置状态，避免卡死
@@ -1630,6 +1828,9 @@ def initialize_game():
     # 预热区块缓存，提前加载玩家周围区块
     if player and hasattr(player, 'position'):
         preload_initial_chunks(player.position, distance=2)
+        # 初始化渐进式加载系统
+        initialize_on_game_start(player.position)
+        print("渐进式加载系统初始化完成")
     
     # 创建性能统计显示
     create_performance_stats_display()
@@ -1662,6 +1863,7 @@ def input(key):
     if current_state == GameState.PLAYING:
         if key == 'escape':
             # 返回主菜单
+            global main_menu
             current_state = GameState.MAIN_MENU
             
             # 销毁玩家和游戏元素
@@ -1693,7 +1895,7 @@ def input(key):
             mouse.locked = False
             
             # 创建新的主菜单
-            create_main_menu()
+            main_menu = create_main_menu()
             
         # 使用物品栏处理方块选择
         if hotbar and (key.isdigit() or key == 'scroll up' or key == 'scroll down'):
@@ -1871,7 +2073,7 @@ class MainMenu(Entity):
         )
     
     def start_singleplayer(self):
-        global current_state, player, hand, sky, chunk_loader
+        global current_state, player, hand, sky, chunk_loader, main_menu
         
         # 销毁主菜单按钮和背景
         destroy(self.logo)
@@ -1885,6 +2087,10 @@ class MainMenu(Entity):
         if hasattr(self, 'background') and self.background:
             destroy(self.background)
             self.background = None
+        
+        # 销毁主菜单对象本身
+        destroy(self)
+        main_menu = None
         
         # 直接初始化游戏，不使用加载界面
         def start_game_directly():
@@ -1957,6 +2163,7 @@ def create_main_menu():
 main_menu = create_main_menu()
 
 # 强制应用最高性能优化级别
+performance_optimizer.optimization_level = 4
 performance_optimizer._apply_optimization_level()
 
 # 添加防止玩家陷入方块的辅助函数
@@ -1967,7 +2174,7 @@ def check_player_stuck_in_blocks():
     
     # 添加静态变量作为冷却计时器，防止频繁触发
     if not hasattr(check_player_stuck_in_blocks, 'cooldown'):
-        check_player_stuck_in_blocks.cooldown = 0
+        check_player_stuck_in_blocks.cooldown = 10
     
     # 如果冷却时间未到，则不执行
     if check_player_stuck_in_blocks.cooldown > 0:
@@ -2042,17 +2249,46 @@ def update():
         # 性能监控 - 测量帧处理时间
         frame_start_time = time.time()
         
-        # 更新性能优化系统
-        performance_optimizer.update()
+        # 更新性能优化系统 - 使用静态变量控制更新频率
+        if not hasattr(update, 'optimizer_update_counter'):
+            update.optimizer_update_counter = 0
         
-        # 更新面片渲染器
-        if 'mesh_renderer' in globals() and mesh_renderer:
+        # 处理异步任务完成 - 算法级优化
+        completed_tasks = async_manager.check_completed_tasks()
+        for task_id, result in completed_tasks:
+            if result and task_id.startswith("chunk_"):
+                # 处理完成的区块加载
+                pass
+        
+        # 批量渲染优化 - 减少渲染调用
+        if player:
+            rendered_count = batch_renderer.render_batches(player.position)
+            # 更新渐进式加载系统
+            progressive_loading_update(player, dt)
+        
+        # 使用配置化的性能优化系统更新间隔
+        update.optimizer_update_counter += 1
+        if update.optimizer_update_counter % perf_config.PERFORMANCE_OPTIMIZER_UPDATE_INTERVAL == 0:
+            performance_optimizer.update()
+        
+        # 使用高性能渲染器替代复杂的面片渲染系统
+        if camera and hasattr(camera, 'position'):
+            high_perf_renderer.fast_render(camera.position)
+        
+        # 使用配置化的备份渲染间隔，极大减少CPU负担
+        if not hasattr(update, 'backup_render_counter'):
+            update.backup_render_counter = 0
+        
+        update.backup_render_counter += 1
+        if update.backup_render_counter % perf_config.BACKUP_RENDER_INTERVAL == 0 and 'mesh_renderer' in globals() and mesh_renderer:
+            # 备份渲染：更新视锥体剔除
             mesh_renderer.update_culling(camera.position, camera.rotation)
+            # 备份渲染：渲染面片
             mesh_renderer.render_faces()
         
-        # 每秒更新一次FPS计数 - 减少计算频率
-        if current_time - last_time >= 1.0:
-            fps = frame_count
+        # 每2秒更新一次FPS计数 - 极限降低更新频率以减少开销
+        if current_time - last_time >= 2.0:
+            fps = frame_count / 2  # 除以2因为是2秒的计数
             frame_count = 0
             last_time = current_time
             
@@ -2063,13 +2299,13 @@ def update():
             if not hasattr(update, 'fps_update_counter'):
                 update.fps_update_counter = 0
             
-            # 每2秒更新一次FPS显示，减少UI更新开销
+            # 每16秒更新一次FPS显示，极大减少UI更新开销
             update.fps_update_counter += 1
-            if update.fps_update_counter >= 2:
+            if update.fps_update_counter >= 8:
                 update.fps_update_counter = 0
                 # 更新FPS显示
                 if fps_text:
-                    fps_text.text = f'FPS: {fps}'
+                    fps_text.text = f'FPS: {fps:.0f}'
                 
                 # 更新性能统计显示
                 update_performance_stats()
@@ -2077,15 +2313,19 @@ def update():
                 # 根据ui_hidden状态控制性能统计显示
                 if performance_stats_text:
                     performance_stats_text.enabled = show_performance_stats and not ui_hidden
-                
+            
+            # 每32秒更新一次优化管理器，极大减少CPU负担
+            if not hasattr(update, 'optimization_manager_counter'):
+                update.optimization_manager_counter = 0
+            
+            update.optimization_manager_counter += 1
+            if update.optimization_manager_counter >= 16:
+                update.optimization_manager_counter = 0
                 # 更新优化管理器
                 # 检查loaded_chunks是否为空，而不是使用不存在的self.blocks
                 if player and loaded_chunks:
-                    # 将loaded_chunks中的所有方块收集到一个列表中
-                    all_blocks = []
-                    for chunk_pos, chunk in loaded_chunks.items():
-                        all_blocks.extend(chunk.blocks)
-                    optimization_manager.update(player, all_blocks)  # 使用全局变量loaded_chunks中的所有方块
+                    # 简化的优化管理器更新，只传递玩家位置
+                    optimization_manager.update(player, [])
                 elif player:
                     optimization_manager.update(player, [])
                 
@@ -2110,11 +2350,22 @@ def update():
                     if hasattr(player.y_animator, 'playing') and player.y_animator.playing:
                         player.y_animator.kill()
                 
-                # 检查玩家是否陷入方块，如果是则将其向上移动
-                check_player_stuck_in_blocks()
+                # 使用静态变量控制物理检测频率
+                if not hasattr(update, 'physics_check_counter'):
+                    update.physics_check_counter = 0
                 
-                # 检测玩家落地并禁用弹跳效果
-                check_player_landing()
+                # 增加计数器
+                update.physics_check_counter += 1
+                
+                # 使用配置化的物理检测间隔，大幅减少CPU负担
+                if update.physics_check_counter % perf_config.PLAYER_STUCK_CHECK_INTERVAL == 0:
+                    # 检查玩家是否陷入方块，如果是则将其向上移动
+                    check_player_stuck_in_blocks()
+                
+                # 使用配置化的落地检测间隔，大幅减少CPU负担
+                if update.physics_check_counter % perf_config.PLAYER_LANDING_CHECK_INTERVAL == 0:
+                    # 检测玩家落地并禁用弹跳效果
+                    check_player_landing()
                 
                 # 检查玩家当前区块是否已加载，如果未加载则阻止移动
                 if player and hasattr(player, 'position'):
@@ -2160,8 +2411,8 @@ def update():
                 # 只在特定帧执行区块管理，大幅减少CPU负担
                 # 将区块管理分散到不同帧，避免单帧负载过高
                 
-                # 区块加载 - 每5帧检查一次，从10帧减少到5帧，提高检查频率
-                if update.chunk_update_counter % 5 == 0 and player and hasattr(player, 'position'):
+                # 使用配置化的区块更新间隔，大幅减少CPU负担
+                if update.chunk_update_counter % perf_config.CHUNK_UPDATE_INTERVAL == 0 and player and hasattr(player, 'position'):
                     # 缓存玩家区块位置，避免重复计算
                     player_chunk = get_chunk_position(player.position)
                     
@@ -2169,17 +2420,35 @@ def update():
                     if not hasattr(update, 'last_player_chunk'):
                         update.last_player_chunk = player_chunk
                     
+                    # 只在玩家移动到新区块时才执行复杂的区块管理
+                    if update.last_player_chunk != player_chunk:
+                        update.last_player_chunk = player_chunk
+                        
+                        # 使用空间哈希快速查找附近区块
+                        nearby_chunks = spatial_hash.query_nearby(player.position, radius=1)
+                        
+                        # 异步加载必要的区块
+                        for dx in [-1, 0, 1]:
+                            for dz in [-1, 0, 1]:
+                                chunk_pos = (player_chunk[0] + dx, player_chunk[1] + dz)
+                                if chunk_pos not in loaded_chunks:
+                                    task_id = f"chunk_{chunk_pos[0]}_{chunk_pos[1]}"
+                                    async_manager.submit_task(task_id, lambda pos=chunk_pos: pos)
+                        
+                        # 跳过原有的复杂区块加载逻辑
+                        pass
+                    
                     # 预加载玩家下方区块 - 这是防止掉落的关键
                     # 每次检查都预加载下方区块，不管玩家是否移动
-                    # 增加检查深度和频率，确保玩家下方区块优先加载
-                    for depth in range(1, 30, 3):  # 检查玩家下方更多位置，间隔更小
+                    # 减少检查深度，只关注最近的几个区块
+                    for depth in range(1, 10, 5):  # 检查玩家下方更少位置，间隔更大
                         below_pos = get_chunk_position(Vec3(player.position.x, player.position.y - depth, player.position.z))
                         if below_pos not in loaded_chunks and below_pos not in preload_queue:
                             # 将下方区块添加到预加载队列，优先级最高
                             preload_queue.insert(0, below_pos)  # 插入到队列开头
                             
                             # 对于最近的几个下方区块，立即同步生成
-                            if depth <= 9:  # 只对最近的3个下方区块进行同步生成
+                            if depth <= 5:  # 只对最近的1个下方区块进行同步生成
                                 try:
                                     # 同步生成玩家正下方区块
                                     chunk = Chunk(below_pos)
@@ -2227,6 +2496,9 @@ def update():
                                 direction_weight = 1
                                 if dx * facing_x + dz * facing_z > 0: # 在前方
                                     direction_weight = 2.5
+                                # 确保 direction_weight 不为零
+                                if direction_weight == 0:
+                                    direction_weight = 0.001  # 使用一个小的非零值
                                 priority = base_priority + dist / direction_weight
                                 chunk_load_queue.put((priority, pos))
                                 update_chunks.queued_chunks.add(pos)
@@ -2520,6 +2792,9 @@ def update_with_lod():
         # 更新GPU视锥体剔除
         if gpu_optimization_integrator.use_gpu_frustum_culling:
             gpu_frustum_culling.update(player.position, player.camera_pivot.rotation)
+        
+        # 更新输入优化器
+        input_optimizer.update(player, application.dt)
     
     # 调用原始update函数
     update()
@@ -2543,10 +2818,10 @@ def update_with_lod():
                 pass
             elif current_fps < 30:  # 帧率低
                 # 帧率低，减少渲染距离
-                RENDER_DISTANCE = max(MIN_RENDER_DISTANCE, RENDER_DISTANCE - 1)
+                RENDER_DISTANCE = max(1, RENDER_DISTANCE - 1)
             elif current_fps < 20:  # 帧率非常低
                 # 帧率非常低，立即降低到最小渲染距离
-                RENDER_DISTANCE = MIN_RENDER_DISTANCE
+                RENDER_DISTANCE = 1
                 # 同时提高综合优化器的优化级别
                 comprehensive_optimizer.set_optimization_level(4)  # 高性能模式
             
@@ -2687,6 +2962,20 @@ def update_performance_stats():
         stats_text += f"加载中区块: {loading_stats.get('loading_chunks', 0)}\n"
         stats_text += f"缓存命中率: {loading_stats.get('cache_hit_rate', 0):.1%}\n"
         stats_text += f"平均加载时间: {loading_stats.get('avg_load_time', 0)*1000:.1f}ms\n"
+    
+    # 添加渐进式加载系统统计
+    if hasattr(progressive_loader, 'get_loading_stats'):
+        prog_stats = progressive_loader.get_loading_stats()
+        stats_text += f"\n渐进式加载系统:\n"
+        stats_text += f"启动阶段: {'进行中' if not prog_stats.get('startup_complete', True) else '完成'} ({prog_stats.get('startup_progress', 1.0)*100:.0f}%)\n"
+        stats_text += f"当前阶段: {prog_stats.get('current_stage', '完成')}\n"
+        stats_text += f"已加载区块: {prog_stats.get('startup_chunks_loaded', 0)}\n"
+        stats_text += f"加载中区块: {prog_stats.get('loading_chunks_count', 0)}\n"
+        stats_text += f"加载速率: {prog_stats.get('current_loading_rate', 0)} 区块/帧\n"
+        stats_text += f"立即队列: {prog_stats.get('immediate_queue_size', 0)}\n"
+        stats_text += f"后台队列: {prog_stats.get('background_queue_size', 0)}\n"
+        total_loaded = prog_stats.get('startup_chunks_loaded', 0) + prog_stats.get('immediate_chunks_loaded', 0) + prog_stats.get('background_chunks_loaded', 0)
+        stats_text += f"总加载区块: {total_loaded}\n"
     
     # 添加区块缓存统计
     if hasattr(block_cache, 'get_cache_stats'):

@@ -55,16 +55,16 @@ class ComprehensivePerformanceOptimizer:
         self.thread_lock = threading.Lock()  # 线程锁
         
         # 性能监控
-        self.fps_history = deque(maxlen=30)  # 帧率历史记录
-        self.frame_time_history = deque(maxlen=30)  # 帧时间历史记录
-        self.target_fps = 60                 # 目标帧率
-        self.min_acceptable_fps = 30         # 最低可接受帧率
+        self.fps_history = deque(maxlen=60)  # 帧率历史记录 (从30增加到60，获取更长时间的数据)
+        self.frame_time_history = deque(maxlen=60)  # 帧时间历史记录 (从30增加到60)
+        self.target_fps = 120                # 目标帧率 (从60提高到120)
+        self.min_acceptable_fps = 90         # 最低可接受帧率 (从30提高到90)
         
         # 自适应优化参数
-        self.adaptive_mode = False           # 关闭自适应模式，使用固定的极限优化
-        self.optimization_level = 5          # 优化级别 (0-5，越高性能越好，视觉质量越低)
+        self.adaptive_mode = True            # 启用自适应模式 (从False改为True，动态调整优化)
+        self.optimization_level = 6          # 优化级别 (0-6，越高性能越好，视觉质量越低) (从5提高到6)
         self.last_optimization_change = 0    # 上次优化级别变更时间
-        self.optimization_cooldown = 0.5     # 优化级别变更冷却时间
+        self.optimization_cooldown = 0.2     # 优化级别变更冷却时间 (从0.5减小到0.2，更快响应)
         
         # 性能统计
         self.stats = {

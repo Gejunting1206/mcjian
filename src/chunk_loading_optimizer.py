@@ -29,7 +29,8 @@ class ChunkLoadingOptimizer:
         
         # 区块加载参数
         self.max_chunks_per_frame = ChunkLoadingConfig.MAX_CHUNKS_PER_FRAME  # 使用配置中的每帧加载区块数
-        self.preload_distance = ChunkLoadingConfig.PRELOAD_DISTANCE      # 预加载距离
+        self.max_steps_per_frame = 50  # 每帧最大生成步骤数，控制增量生成负载
+        self.preload_distance = ChunkLoadingConfig.PRELOAD_DISTANCE - 1      # 预加载距离减1
         self.unload_distance = ChunkLoadingConfig.UNLOAD_DISTANCE       # 卸载距离
         
         # 异步加载控制
@@ -48,16 +49,21 @@ class ChunkLoadingOptimizer:
         # 性能监控
         self.performance_monitor = PerformanceOptimizer()
         self.adaptive_loading = True   # 自适应加载
-        self.fps_history = deque(maxlen=10) # 记录最近10帧的FPS (从20减少到10)
-        self.frame_time_history = deque(maxlen=10) # 记录最近10帧的帧时间 (从20减少到10)
-        self.target_fps = 60           # 目标FPS
+        self.fps_history = deque(maxlen=30) # 记录最近30帧的FPS (从15增加到30)
+        self.frame_time_history = deque(maxlen=30) # 记录最近30帧的帧时间 (从15增加到30)
+        self.target_fps = 60          # 目标FPS (从150降低到60)
         self.target_frame_time = 1.0 / self.target_fps # 目标帧时间
+        self.aggressive_optimization = True # 启用激进优化模式
         
         # 加载状态跟踪
         self.loading_chunks = set()    # 正在加载的区块
         self.loaded_chunks = {}        # 已加载的区块
         self.chunk_states = {}         # 区块状态字典
         self.chunk_last_relevant_time = {} # 记录区块最后一次相关的时间戳
+        
+        # 增量生成相关
+        self.chunk_generation_data = {}  # 区块生成数据
+        self.chunk_generation_progress = {}  # 区块生成进度
         
         # 性能统计
         self.stats = {
@@ -74,7 +80,36 @@ class ChunkLoadingOptimizer:
         self._initialize_systems()
         
         logging.info("区块加载优化器初始化完成")
-    
+
+    def _process_incremental_generation(self):
+        """处理增量生成，每帧只处理有限数量的步骤"""
+        total_steps_processed = 0
+        max_steps = self.max_steps_per_frame
+        
+        # 复制当前需要处理的区块列表，避免在迭代中修改
+        chunks_to_process = list(self.chunk_generation_data.keys())
+        
+        for chunk_pos in chunks_to_process:
+            if total_steps_processed >= max_steps:
+                break
+            
+            before_progress = self.chunk_generation_progress.get(chunk_pos, 0)
+            chunk_data = self._generate_chunk(chunk_pos)
+            after_progress = self.chunk_generation_progress.get(chunk_pos, 0)
+            
+            steps_processed = after_progress - before_progress
+            total_steps_processed += steps_processed
+            
+            if chunk_data is not None:
+                # 区块生成完成，添加到已加载列表
+                self.loaded_chunks[chunk_pos] = chunk_data
+                self.stats['chunks_loaded_total'] += 1
+                # 清理临时数据
+                if chunk_pos in self.chunk_generation_progress:
+                    del self.chunk_generation_progress[chunk_pos]
+                if chunk_pos in self.chunk_generation_data:
+                    del self.chunk_generation_data[chunk_pos]
+
     def _initialize_systems(self):
         """初始化相关系统"""
         # 配置区块加载系统
@@ -108,14 +143,32 @@ class ChunkLoadingOptimizer:
         start_time = time.time()
         
         # 获取玩家所在区块
+        # 获取玩家区块位置并确保为三维元组
         player_chunk = get_chunk_position(player_position)
+        if len(player_chunk) == 2:
+            player_chunk = (player_chunk[0], 0, player_chunk[1])  # 添加y坐标
         
-        # 1. 优先加载玩家下方区块 - 防止掉落
+        # 1. 处理增量生成任务
+        self._process_incremental_generation()
+
+        # 2. 优先加载玩家下方区块 - 防止掉落
         self._ensure_below_chunks_loaded(player_position)
         
         # 2. 根据玩家位置和朝向，智能加载周围区块
-        # 减少每次处理的区块数量，只处理最近的区块
-        chunk_loader.queue_chunks_around_player(player_position, player_direction, max_chunks=5) # 限制为5个区块
+        # 使用增量生成系统替代旧的chunk_loader
+        surrounding_chunks = self._get_surrounding_chunks(player_position, player_direction, max_chunks=3)
+        for chunk_pos in surrounding_chunks:
+            if chunk_pos not in self.loaded_chunks and chunk_pos not in self.loading_chunks and chunk_pos not in self.chunk_generation_data:
+                self.chunk_generation_progress[chunk_pos] = 0
+                self.chunk_generation_data[chunk_pos] = {
+                    'blocks': [],
+                    'heightmap': [],
+                    'structures': [],
+                    'terrain_generated': False,
+                    'structures_generated': False,
+                    'mesh_generated': False
+                }
+                self.loading_chunks.add(chunk_pos)
         
         # 3. 处理加载队列，加载区块
         self._process_loading_queue(player_chunk)
@@ -132,40 +185,171 @@ class ChunkLoadingOptimizer:
         if self.adaptive_loading:
             self._adapt_loading_parameters()
     
+    def _update_stats(self, update_time):
+        """更新性能统计信息"""
+        # 更新帧时间影响
+        self.stats['frame_time_impact'] = update_time * 1000  # 转换为毫秒
+        
+        # 计算平均加载时间
+        if self.stats['load_times']:
+            self.stats['avg_load_time'] = sum(self.stats['load_times']) / len(self.stats['load_times'])
+        
+        # 计算缓存命中率
+        total_requests = block_cache.cache_hits + block_cache.cache_misses
+        if total_requests > 0:
+            self.stats['cache_hit_rate'] = block_cache.cache_hits / total_requests
+
     def _ensure_below_chunks_loaded(self, player_position):
         """确保玩家下方区块已加载 - 防止掉落"""
         # 检查玩家下方多个深度的区块，但减少检查深度
         for depth in range(1, 12, 4):  # 从1-20减少到1-12
             below_pos = Vec3(player_position.x, player_position.y - depth, player_position.z)
             below_chunk = get_chunk_position(below_pos)
+            # 确保区块位置为三维元组
+            if len(below_chunk) == 2:
+                below_chunk = (below_chunk[0], 0, below_chunk[1])
             
             # 如果下方区块未加载，立即加载
-            if below_chunk not in self.loaded_chunks and below_chunk not in self.loading_chunks:
-                # 使用最高优先级加载
-                chunk_loader.queue_chunk(below_chunk, priority=0.1, force=True)
+            if below_chunk not in self.loaded_chunks and below_chunk not in self.loading_chunks and below_chunk not in self.chunk_generation_data:
+                # 添加到增量生成队列
+                self.chunk_generation_progress[below_chunk] = 0
+                self.chunk_generation_data[below_chunk] = {
+                    'blocks': [],
+                    'heightmap': [],
+                    'structures': [],
+                    'terrain_generated': False,
+                    'structures_generated': False,
+                    'mesh_generated': False
+                }
                 self.loading_chunks.add(below_chunk)
+
+    def _get_surrounding_chunks(self, player_position, direction=None, max_chunks=3):
+        """获取玩家周围的区块位置，优先考虑玩家朝向"""
+        player_chunk = get_chunk_position(player_position)
+        chunks = []
+        
+        # 添加调试信息
+        logging.debug(f"player_chunk type: {type(player_chunk)}, value: {player_chunk}")
+        
+        try:
+            # 生成玩家周围5x5范围内的区块
+            for dx in range(-2, 3):
+                for dz in range(-2, 3):
+                    if dx == 0 and dz == 0:
+                        continue  # 跳过玩家当前所在区块
+                    
+                    # 根据player_chunk的实际维度使用正确的索引
+                    if len(player_chunk) == 2:
+                        # 转换为3D区块坐标 (x,y,z)
+                        chunk_pos = (
+                            player_chunk[0] + dx,
+                            0,  # y坐标默认为0
+                            player_chunk[1] + dz
+                        )
+                    elif len(player_chunk) == 3:
+                        # 3D区块坐标 (x,y,z)
+                        chunk_pos = (
+                            player_chunk[0] + dx,
+                            player_chunk[1],
+                            player_chunk[2] + dz
+                        )
+                    else:
+                        logging.error(f"Unexpected chunk position dimensions: {len(player_chunk)}")
+                        continue
+                    
+                    chunks.append(chunk_pos)
+        except IndexError as e:
+            logging.error(f"Index error in _get_surrounding_chunks: {e}, player_chunk: {player_chunk}")
+            # 使用默认2D坐标作为回退，增加安全检查
+            x = player_chunk[0] if len(player_chunk) > 0 else 0
+            z = player_chunk[1] if len(player_chunk) > 1 else 0
+            for dx in range(-2, 3):
+                for dz in range(-2, 3):
+                    if dx == 0 and dz == 0:
+                        continue
+                    chunk_pos = (x + dx, z + dz)
+                    chunks.append(chunk_pos)
+        
+        # 按距离排序，根据pos维度使用正确的坐标
+        chunks.sort(key=lambda pos: (
+            (pos[0] - player_chunk[0])**2 + 
+            (pos[1] - player_chunk[1])** 2 if len(pos) == 2 else 
+            (pos[2] - player_chunk[1])**2
+        ))
+        
+        # 如果提供了方向，优先考虑玩家朝向的区块
+        if direction is not None:
+            # 简单的方向优先级排序
+            dir_x = direction.x
+            dir_z = direction.z
+            
+            def direction_priority(chunk_pos):
+                dx = chunk_pos[0] - player_chunk[0]
+                dz = chunk_pos[2] - player_chunk[2]
+                # 计算方向点积（优先同方向的区块）
+                dot_product = dx * dir_x + dz * dir_z
+                # 结合距离和方向优先级
+                return (-dot_product, (dx**2 + dz**2))
+            
+            chunks.sort(key=direction_priority)
+        
+        # 返回最多max_chunks个区块
+        return chunks[:max_chunks]
     
+    def _unload_distant_chunks(self, player_chunk, player_direction=None):
+        """卸载远处区块以释放内存"""
+        max_distance = self.preload_distance + 2
+        distant_chunks = []
+        
+        # 找出超出最大距离的区块
+        for chunk_pos in self.loaded_chunks.keys():
+            distance = self._get_chunk_distance(chunk_pos, player_chunk)
+            if distance > max_distance:
+                distant_chunks.append(chunk_pos)
+        
+        # 每次只卸载一部分区块，避免卡顿
+        num_to_unload = min(len(distant_chunks), 2)  # 每次最多卸载2个区块
+        unloaded_count = 0
+        
+        for chunk_pos in distant_chunks[:num_to_unload]:
+            try:
+                chunk = self.loaded_chunks.pop(chunk_pos, None)
+                if chunk and hasattr(chunk, 'destroy'):
+                    chunk.destroy()
+                
+                # 更新统计信息
+                self.stats['chunks_unloaded_total'] += 1
+                unloaded_count += 1
+            except Exception as e:
+                logging.error(f"卸载区块 {chunk_pos} 时出错: {e}")
+        
+        if unloaded_count > 0:
+            logging.debug(f"已卸载 {unloaded_count} 个远处区块")
+
     def _process_loading_queue(self, player_chunk):
         """处理加载队列，加载区块"""
         # 确定本帧要加载的区块数量
         # 根据性能动态调整每帧加载的区块数
         chunks_to_load = self._get_adaptive_chunks_per_frame()
         
+        # 已迁移到增量生成系统处理
+        pass
+        
         # 处理加载队列
-        loaded_chunks = chunk_loader.process_queue(max_chunks=chunks_to_load, chunk_generator=self._generate_chunk)
+        # loaded_chunks = chunk_loader.process_queue(max_chunks=chunks_to_load, chunk_generator=self._generate_chunk)
         
         # 更新已加载区块
-        for chunk_pos, chunk_data in loaded_chunks:
-            self.loaded_chunks[chunk_pos] = chunk_data
-            if chunk_pos in self.loading_chunks:
-                self.loading_chunks.remove(chunk_pos)
-            
-            # 更新统计信息
-            self.stats['chunks_loaded_total'] += 1
-            self.stats['chunks_loaded_last_second'] += 1
+        # for chunk_pos, chunk_data in loaded_chunks:
+        #     self.loaded_chunks[chunk_pos] = chunk_data
+        #     if chunk_pos in self.loading_chunks:
+        #         self.loading_chunks.remove(chunk_pos)
+        #     
+        #     # 更新统计信息
+        #     self.stats['chunks_loaded_total'] += 1
+        #     self.stats['chunks_loaded_last_second'] += 1
     
     def _get_adaptive_chunks_per_frame(self):
-        """根据当前性能动态获取每帧应加载的区块数 - 更保守的加载策略"""
+        """根据当前性能动态获取每帧应加载的区块数 - 更激进的加载策略"""
         # 导入配置
         from chunk_loading_config import ChunkLoadingConfig
         base_max_chunks = ChunkLoadingConfig.MAX_CHUNKS_PER_FRAME
@@ -177,368 +361,317 @@ class ChunkLoadingOptimizer:
         # 使用更平滑的平均帧时间
         avg_frame_time = np.mean(list(self.frame_time_history))
         
-        # 如果帧时间远低于目标，可以尝试适度增加加载量
-        if avg_frame_time < self.target_frame_time * 0.7:
-            # 更保守地增加
-            adaptive_max = min(base_max_chunks + 2, 12) # 增加量更小，上限降低到12
+        # 如果帧时间远低于目标，可以大幅增加加载量
+        if avg_frame_time < self.target_frame_time * 0.6:
+            # 大幅增加
+            adaptive_max = min(base_max_chunks + 2, 8) # 降低每帧加载上限，减少卡顿
             return adaptive_max
-        elif avg_frame_time < self.target_frame_time * 0.8:
-            # 轻微增加
-            adaptive_max = min(base_max_chunks + 1, 10) # 增加量更小，上限降低到10
+        elif avg_frame_time < self.target_frame_time * 0.7:
+            # 中等增加
+            adaptive_max = min(base_max_chunks + 1, 6)
             return adaptive_max
-        # 如果帧时间高于目标，大幅减少加载量
+        elif avg_frame_time < self.target_frame_time * 0.85:
+            # 小幅增加
+            adaptive_max = min(base_max_chunks + 1, 4)
+            return adaptive_max
+        elif avg_frame_time > self.target_frame_time * 1.5:
+            # 大幅减少
+            adaptive_max = max(base_max_chunks - 3, 1)
+            return adaptive_max
+        elif avg_frame_time > self.target_frame_time * 1.2:
+            # 中等减少
+            adaptive_max = max(base_max_chunks - 2, 2)
+            return adaptive_max
         elif avg_frame_time > self.target_frame_time * 1.1:
-            # 大幅减少，确保至少加载1个
-            adaptive_max = max(base_max_chunks - 2, 1) # 减少量更大
-            return adaptive_max
-        elif avg_frame_time > self.target_frame_time * 1.05:
-            # 适度减少
-            adaptive_max = max(base_max_chunks - 1, 1)
+            # 小幅减少
+            adaptive_max = max(base_max_chunks - 1, 3)
             return adaptive_max
         
-        # 性能稳定，使用配置中的基础值
+        # 默认返回基础值
         return base_max_chunks
 
+    def _adapt_loading_parameters(self):
+        """根据性能统计自适应调整加载参数"""
+        if not self.stats or 'frame_time_impact' not in self.stats:
+            return
+
+        # 根据帧时间影响调整更新间隔
+        if self.stats['frame_time_impact'] > 30:
+            # 如果优化器本身耗时超过30ms，延长更新间隔
+            self.update_interval = min(self.update_interval + 0.02, 0.2)
+        elif self.stats['frame_time_impact'] < 10 and self.update_interval > 0.05:
+            # 如果优化器耗时较少且更新间隔大于0.05，缩短更新间隔
+            self.update_interval = max(self.update_interval - 0.01, 0.05)
+
+        # 根据缓存命中率调整预加载距离
+        if self.stats.get('cache_hit_rate', 0) > 0.7 and self.preload_distance < 3:
+            # 缓存命中率高时增加预加载距离
+            self.preload_distance += 0.5
+        elif self.stats.get('cache_hit_rate', 0) < 0.4 and self.preload_distance > 1:
+            # 缓存命中率低时减少预加载距离
+            self.preload_distance -= 0.5
+
+        # 确保预加载距离在合理范围内
+        self.preload_distance = int(max(1, min(self.preload_distance, 4)))
+
+
     def _generate_chunk(self, chunk_pos):
-        """生成区块 - 这里需要与游戏的区块生成系统集成"""
+        """生成区块 - 实现增量生成逻辑，分步减轻主线程负担"""
+        # 初始化生成进度
+        if chunk_pos not in self.chunk_generation_progress:
+            self.chunk_generation_progress[chunk_pos] = 0
+            # 初始化区块数据
+            self.chunk_generation_data[chunk_pos] = {
+                'blocks': [],
+                'heightmap': [],
+                'structures': [],
+                'terrain_generated': False,
+                'structures_generated': False,
+                'mesh_generated': False
+            }
+
+        progress = self.chunk_generation_progress[chunk_pos]
+        chunk_data = self.chunk_generation_data[chunk_pos]
+        steps_processed = 0
+
+        # 分步骤生成区块
+        try:
+            # 步骤1: 生成地形高度图 (0-20步)
+            if progress < 20 and not chunk_data['terrain_generated']:
+                # 每帧只生成部分高度图数据
+                for i in range(progress, min(progress + 5, 20)):
+                    x = i % 16
+                    z = i // 16
+                    # 生成高度数据
+                    height = self._generate_height(x, z, chunk_pos)
+                    chunk_data['heightmap'].append((x, z, height))
+                    steps_processed += 1
+                self.chunk_generation_progress[chunk_pos] += steps_processed
+                if self.chunk_generation_progress[chunk_pos] >= 20:
+                    chunk_data['terrain_generated'] = True
+                    progress = 20
+
+            # 步骤2: 生成区块结构 (20-40步)
+            if progress >= 20 and progress < 40 and not chunk_data['structures_generated']:
+                # 每帧只生成部分结构
+                for i in range(progress - 20, min(progress - 20 + 5, 20)):
+                    # 生成结构数据
+                    structure = self._generate_structure(i, chunk_pos)
+                    if structure:
+                        chunk_data['structures'].append(structure)
+                    steps_processed += 1
+                self.chunk_generation_progress[chunk_pos] += steps_processed
+                if self.chunk_generation_progress[chunk_pos] >= 40:
+                    chunk_data['structures_generated'] = True
+                    progress = 40
+
+            # 步骤3: 生成方块数据 (40-60步)
+            if progress >= 40 and progress < 60 and not chunk_data['mesh_generated']:
+                # 每帧只生成部分方块
+                for i in range(progress - 40, min(progress - 40 + 10, 20)):
+                    # 生成方块数据
+                    blocks = self._generate_blocks(i, chunk_data['heightmap'], chunk_data['structures'])
+                    chunk_data['blocks'].extend(blocks)
+                    steps_processed += 1
+                self.chunk_generation_progress[chunk_pos] += steps_processed
+                if self.chunk_generation_progress[chunk_pos] >= 60:
+                    chunk_data['mesh_generated'] = True
+
+            # 如果所有生成步骤完成
+            if chunk_data['terrain_generated'] and chunk_data['structures_generated'] and chunk_data['mesh_generated']:
+                # 创建最终区块对象
+                final_chunk = self._create_chunk_object(chunk_pos, chunk_data)
+                # 将完成的区块添加到已加载列表
+                self.loaded_chunks[chunk_pos] = final_chunk
+                self.stats['chunks_loaded_total'] += 1
+                # 清理临时数据
+                del self.chunk_generation_progress[chunk_pos]
+                del self.chunk_generation_data[chunk_pos]
+                return final_chunk
+            else:
+                # 未完成，返回None表示需要继续生成
+                return steps_processed
+        except Exception as e:
+            logging.error(f"区块生成错误: {e}")
+            # 清理错误的生成数据
+            if chunk_pos in self.chunk_generation_progress:
+                del self.chunk_generation_progress[chunk_pos]
+            if chunk_pos in self.chunk_generation_data:
+                del self.chunk_generation_data[chunk_pos]
+            return None
+
+    def _generate_height(self, x, z, chunk_pos):
+        """生成地形高度数据"""
+        # 简化的高度生成逻辑
+        return int(np.sin(x/5) * np.cos(z/5) * 5 + 10)
+
+    def _generate_structure(self, index, chunk_pos):
+        """生成结构数据"""
+        # 简化的结构生成逻辑
+        if index % 7 == 0:  # 随机生成一些结构
+            return {
+                'type': 'tree',
+                'position': (index % 16, 10, index // 16)
+            }
+        return None
+
+    def _generate_blocks(self, index, heightmap, structures):
+        """生成方块数据"""
+        # 简化的方块生成逻辑
+        blocks = []
+        x = index % 16
+        z = index // 16
+        # 查找该位置的高度
+        height = next((h for (hx, hz, h) in heightmap if hx == x and hz == z), 10)
+        # 添加方块
+        for y in range(height):
+            blocks.append((x, y, z, 'grass_block' if y == height-1 else 'dirt_block'))
+        return blocks
+
+    def _create_chunk_object(self, chunk_pos, chunk_data):
+        """创建最终的区块对象"""
+        from loading_system import Chunk  # 从加载系统导入区块类
+        # 创建实际的区块对象
+        chunk = Chunk(position=chunk_pos)
+        chunk.blocks = chunk_data['blocks']
+        chunk.structures = chunk_data['structures']
+        chunk.generate_mesh()  # 生成区块网格
+        return chunk
         # 首先检查缓存
         cached_data = block_cache.get_block_data(chunk_pos)
         if cached_data is not None:
             return cached_data
-        
-        # 这里应该调用游戏的区块生成函数
+
+        # 检查是否已有生成中的数据
+        if chunk_pos not in self.chunk_generation_data:
+            # 初始化生成数据
+            self.chunk_generation_data[chunk_pos] = {
+                'stage': 0,  # 0:初始化, 1:高度图, 2:主要方块, 3:细节, 4:完成
+                'progress': 0,
+                'data': None
+            }
+            logging.debug(f"开始生成区块 {chunk_pos}")
+
+        gen_data = self.chunk_generation_data[chunk_pos]
+        result = None
+
         try:
-            # 在实际应用中，这里应该调用 Chunk 类的 generate 方法
-            from ursina import Chunk
-            chunk = Chunk(chunk_pos)
-            chunk.generate()
-            
-            # 检查是否有保存的状态
-            from chunk_state_manager import chunk_state_manager
-            saved_state = chunk_state_manager.load_chunk_state(chunk_pos)
-            if saved_state:
-                # 应用保存的状态
-                for block_state in saved_state['blocks']:
-                    # 找到对应的方块并更新状态
-                    for block in chunk.blocks:
-                        if block.position == block_state['position']:
-                            block.id = block_state['id']
-                            break
-            
-            # 应用玩家的修改
-            chunk_state_manager.apply_modifications(chunk_pos, chunk)
-            
-            # 缓存生成的区块数据
-            block_cache.cache_block_data(chunk_pos, chunk)
-            
-            return chunk
+            # 根据当前阶段执行部分生成工作
+            if gen_data['stage'] == 0:
+                # 阶段0: 初始化区块数据
+                gen_data['data'] = self._initialize_chunk_data(chunk_pos)
+                gen_data['stage'] = 1
+                gen_data['progress'] = 20
+            elif gen_data['stage'] == 1:
+                # 阶段1: 生成高度图
+                self._generate_heightmap(gen_data['data'], chunk_pos)
+                gen_data['stage'] = 2
+                gen_data['progress'] = 40
+            elif gen_data['stage'] == 2:
+                # 阶段2: 放置主要方块
+                self._place_main_blocks(gen_data['data'], chunk_pos)
+                gen_data['stage'] = 3
+                gen_data['progress'] = 60
+            elif gen_data['stage'] == 3:
+                # 阶段3: 添加细节和装饰
+                self._add_details_and_decorations(gen_data['data'], chunk_pos)
+                gen_data['stage'] = 4
+                gen_data['progress'] = 80
+            elif gen_data['stage'] == 4:
+                # 阶段4: 完成生成并缓存
+                result = self._finalize_chunk(gen_data['data'], chunk_pos)
+                block_cache.cache_block_data(chunk_pos, result)
+                del self.chunk_generation_data[chunk_pos]
+                gen_data['progress'] = 100
+                logging.debug(f"区块 {chunk_pos} 生成完成")
+
+            # 记录生成进度
+            self.chunk_generation_progress[chunk_pos] = gen_data['progress']
+            return result
+
         except Exception as e:
-            logging.error(f"生成区块 {chunk_pos} 时出错: {e}")
+            logging.error(f"区块生成错误 {chunk_pos}: {e}")
+            if chunk_pos in self.chunk_generation_data:
+                del self.chunk_generation_data[chunk_pos]
             return None
-    
-    def _unload_distant_chunks(self, player_chunk, player_direction=None):
-        """卸载远离玩家的区块，考虑内存压力、玩家朝向和区块相关性"""
-        from chunk_loading_config import ChunkLoadingConfig
-        chunk_keys = list(self.loaded_chunks.keys())
-        if not chunk_keys:
+
+    def _initialize_chunk_data(self, chunk_pos):
+        """初始化区块数据结构"""
+        return {
+            'position': chunk_pos,
+            'blocks': np.zeros((16, 256, 16), dtype=np.uint8),
+            'heightmap': np.zeros((16, 16), dtype=np.uint8),
+            'biomes': np.zeros((16, 16), dtype=np.uint8),
+            'modified': False
+        }
+
+    def _generate_heightmap(self, chunk_data, chunk_pos):
+        """生成地形高度图"""
+        # 使用简单的噪声算法生成高度图
+        x, z = chunk_pos
+        for i in range(16):
+            for j in range(16):
+                world_x = x * 16 + i
+                world_z = z * 16 + j
+                # 简化的高度计算，减少计算复杂度
+                height = int((np.sin(world_x * 0.1) * np.cos(world_z * 0.1) + 1) * 10) + 60
+                chunk_data['heightmap'][i, j] = height
+
+    def _place_main_blocks(self, chunk_data, chunk_pos):
+        """放置主要方块类型"""
+        # 只放置基础方块，减少计算量
+        for x in range(16):
+            for z in range(16):
+                height = chunk_data['heightmap'][x, z]
+                # 只放置地面和石头层
+                if height > 65:
+                    chunk_data['blocks'][x, height, z] = 2  # 草方块
+                    for y in range(height-1, height-4, -1):
+                        if y > 0:
+                            chunk_data['blocks'][x, y, z] = 3  # 泥土
+                # 简单的石头层
+                for y in range(height-4, max(0, height-10), -1):
+                    chunk_data['blocks'][x, y, z] = 1  # 石头
+
+    def _add_details_and_decorations(self, chunk_data, chunk_pos):
+        """添加细节和装饰性元素"""
+        # 简化细节生成，只添加少量元素
+        x, z = chunk_pos
+        for i in range(16):
+            for j in range(16):
+                height = chunk_data['heightmap'][i, j]
+                # 偶尔添加树木
+                if height > 65 and (x*16+i + z*16+j) % 30 == 0:
+                    self._place_tree(chunk_data, i, height+1, j)
+
+    def _place_tree(self, chunk_data, x, y, z):
+        """放置简单树木"""
+        # 限制树木高度，减少计算
+        if y + 4 >= 256:  # 防止超出世界高度
             return
+        # 树干
+        for dy in range(4):
+            chunk_data['blocks'][x, y+dy, z] = 17  # 木头
+        # 树叶
+        for dy in range(2):
+            for dx in [-1, 0, 1]:
+                for dz in [-1, 0, 1]:
+                    if 0 <= x+dx < 16 and 0 <= z+dz < 16:
+                        chunk_data['blocks'][x+dx, y+3+dy, z+dz] = 18  # 树叶
 
-        # 动态调整卸载距离和检查数量基于内存压力
-        memory_usage = 0
-        is_memory_pressure = ChunkLoadingConfig.should_cleanup_memory(memory_usage)
-        
-        current_unload_distance = self.unload_distance
-        check_count = min(10, len(chunk_keys)) # 增加检查数量以更快响应
+    def _finalize_chunk(self, chunk_data, chunk_pos):
+        """完成区块生成并准备返回数据"""
+        # 简单的区块数据打包
+        return {
+            'blocks': chunk_data['blocks'],
+            'heightmap': chunk_data['heightmap'],
+            'biomes': chunk_data['biomes'],
+            'position': chunk_pos
+        }
 
-        if is_memory_pressure:
-            current_unload_distance = max(self.preload_distance + 1, self.unload_distance - 1)
-            check_count = min(20, len(chunk_keys))
-            logging.debug(f"内存压力高，临时卸载距离: {current_unload_distance}, 检查数量: {check_count}")
-
-        # 收集候选卸载区块及其评分
-        unload_candidates = []
-        current_time = time.time()
-        for chunk_pos in chunk_keys:
-            dist = self._get_chunk_distance(chunk_pos, player_chunk)
-            
-            # 基本距离检查
-            if dist <= current_unload_distance and not is_memory_pressure:
-                continue # 不在卸载范围内且无内存压力
-                
-            # 计算卸载评分 (分数越低越优先卸载)
-            score = 0
-            
-            # 距离评分 (距离越远分数越低)
-            score -= dist * 1.0 
-            
-            # 时间评分 (越久没用到分数越低)
-            last_relevant = self.chunk_last_relevant_time.get(chunk_pos, 0)
-            time_since_relevant = current_time - last_relevant
-            score -= time_since_relevant * 0.5 # 时间权重稍低
-            
-            # 方向评分 (后方区块分数降低)
-            if player_direction:
-                dx = chunk_pos[0] - player_chunk[0]
-                dz = chunk_pos[1] - player_chunk[1]
-                if dx != 0 or dz != 0: # Avoid division by zero
-                    chunk_vector = Vec3(dx, 0, dz).normalized()
-                    dot_product = chunk_vector.dot(player_direction.normalized())
-                    if dot_product < -0.3: # 在后方
-                        score -= 5 # 显著降低后方区块评分
-
-            # 内存压力调整
-            if is_memory_pressure and dist > (current_unload_distance * 0.6):
-                 score -= 10 # 内存压力大时，距离稍远的区块也显著降低评分
-                 
-            # 只考虑距离大于预加载范围的，或有内存压力的
-            if dist > self.preload_distance or is_memory_pressure:
-                 unload_candidates.append((score, chunk_pos))
-
-        # 对候选区块按评分排序 (升序，分数低的在前)
-        unload_candidates.sort()
-
-        # 确定要卸载的数量
-        num_to_unload = 0
-        if is_memory_pressure:
-            num_to_unload = min(len(unload_candidates), max(1, check_count // 2)) # 内存压力大时卸载更多
-        else:
-            # 正常情况下，只卸载评分最低的几个，且距离超过阈值的
-            count = 0
-            for score, pos in unload_candidates:
-                 if self._get_chunk_distance(pos, player_chunk) > current_unload_distance:
-                     count += 1
-                 if count >= check_count // 3: # 卸载检查数量的三分之一
-                     break
-            num_to_unload = count
-            
-        # 执行卸载
-        unloaded_count = 0
-        for i in range(min(num_to_unload, len(unload_candidates))):
-            score, chunk_pos = unload_candidates[i]
-            if chunk_pos not in self.loaded_chunks: # 可能已被其他逻辑卸载
-                continue
-                
-            try:
-                # 保存状态逻辑 (保持不变)
-                chunk_to_save = self.loaded_chunks.get(chunk_pos)
-                save_state = False
-                if chunk_to_save:
-                    if hasattr(chunk_to_save, 'is_modified') and chunk_to_save.is_modified:
-                        save_state = True
-                if save_state:
-                    from chunk_state_manager import chunk_state_manager
-                    logging.debug(f"卸载前保存已修改区块 {chunk_pos} (评分: {score:.2f})")
-                    chunk_state_manager.save_chunk_state(chunk_pos, chunk_to_save)
-                
-                # 卸载
-                chunk = self.loaded_chunks.pop(chunk_pos, None)
-                if chunk:
-                    if hasattr(chunk, 'destroy'):
-                        chunk.destroy()
-                    self.stats['chunks_unloaded_total'] += 1
-                    unloaded_count += 1
-                    # 从相关性字典中移除
-                    self.chunk_last_relevant_time.pop(chunk_pos, None)
-                    
-            except Exception as e:
-                logging.error(f"卸载区块 {chunk_pos} (评分: {score:.2f}) 时出错: {e}")
-
-        # if unloaded_count > 0:
-        #     logging.debug(f"本轮卸载 {unloaded_count} 个区块")
-
-    def _get_adaptive_chunks_per_frame(self):
-        """根据性能动态调整每帧加载的区块数，平衡帧率和加载速度"""
-        from chunk_loading_config import ChunkLoadingConfig
-        
-        # 更新性能历史记录
-        current_fps = self.performance_monitor.stats.get('current_fps', 60) # 使用 .get() 提供默认值
-        current_frame_time = self.performance_monitor.stats.get('frame_time_ms', 0.016) / 1000.0 # 获取毫秒并转换为秒
-        self.fps_history.append(current_fps)
-        self.frame_time_history.append(current_frame_time)
-        
-        # 计算平均性能指标
-        avg_fps = sum(self.fps_history) / len(self.fps_history) if self.fps_history else 60
-        avg_frame_time = sum(self.frame_time_history) / len(self.frame_time_history) if self.frame_time_history else 0.016
-        logging.debug(f"自适应加载: Avg FPS={avg_fps:.1f}, Avg FrameTime={avg_frame_time*1000:.1f}ms")
-
-        memory_usage = 0
-        
-        target_chunks = self.max_chunks_per_frame
-        
-        # 基于平均FPS动态调整 - 更平滑的策略
-        if avg_fps < ChunkLoadingConfig.MIN_FPS_THRESHOLD * 0.9: # FPS较低时
-            # 轻微减少加载量，避免急剧下降
-            target_chunks = max(1, self.max_chunks_per_frame - 1)
-        elif avg_fps > ChunkLoadingConfig.MIN_FPS_THRESHOLD * 1.5: # FPS较高时
-            # 允许更快地增加加载量
-            target_chunks = min(ChunkLoadingConfig.MAX_CHUNKS_PER_FRAME * 2, self.max_chunks_per_frame + 2)
-        elif avg_fps > ChunkLoadingConfig.MIN_FPS_THRESHOLD * 1.1: # FPS良好时
-            # 适度增加加载量
-            target_chunks = min(ChunkLoadingConfig.MAX_CHUNKS_PER_FRAME, self.max_chunks_per_frame + 1)
-        # else: # FPS在阈值附近，保持当前加载量
-        #     target_chunks = self.max_chunks_per_frame
-        
-        # 检查内存使用情况
-        if ChunkLoadingConfig.should_cleanup_memory(memory_usage):
-            target_chunks = 1  # 内存压力大时最小化加载
-        
-        # 平滑调整 max_chunks_per_frame
-        # 避免突变，逐步趋向目标值
-        if target_chunks > self.max_chunks_per_frame:
-            self.max_chunks_per_frame += 1
-        elif target_chunks < self.max_chunks_per_frame:
-            self.max_chunks_per_frame -= 1
-        # 限制调整范围
-        self.max_chunks_per_frame = max(1, min(ChunkLoadingConfig.MAX_CHUNKS_PER_FRAME * 2, self.max_chunks_per_frame))
-        logging.debug(f"自适应加载: 目标区块/帧={target_chunks}, 实际区块/帧={self.max_chunks_per_frame}")
-
-        return self.max_chunks_per_frame
-    
-    def _update_stats(self, update_time):
-        """更新性能统计"""
-        # 记录加载时间
-        self.stats['load_times'].append(update_time)
-        if len(self.stats['load_times']) > 100:
-            self.stats['load_times'].pop(0)
-        
-        # 计算平均加载时间
-        if self.stats['load_times']:
-            self.stats['avg_load_time'] = sum(self.stats['load_times']) / len(self.stats['load_times'])
-        
-        # 获取缓存命中率
-        cache_stats = block_cache.get_cache_stats()
-        self.stats['cache_hit_rate'] = cache_stats['hit_rate']
-        
-        # 计算对帧时间的影响
-        self.stats['frame_time_impact'] = update_time
-    
-    def _adapt_loading_parameters(self):
-        """根据性能指标自适应调整加载参数 - 更平滑的调整策略"""
-        from chunk_loading_config import ChunkLoadingConfig
-        
-        # 使用历史平均性能指标
-        avg_fps = sum(self.fps_history) / len(self.fps_history) if self.fps_history else 60
-        avg_frame_time = sum(self.frame_time_history) / len(self.frame_time_history) if self.frame_time_history else 0.016
-        memory_usage = 0
-        
-        # 根据性能调整预加载距离 (更平滑的调整)
-        target_preload_distance = self.preload_distance
-        if avg_fps < ChunkLoadingConfig.MIN_FPS_THRESHOLD * 0.85: # 稍微放宽降低阈值
-            # FPS较低时才考虑减少预加载距离，且减少幅度较小
-            target_preload_distance = max(ChunkLoadingConfig.PRELOAD_DISTANCE // 2, self.preload_distance - 1) # 保证不低于基础值的一半
-        elif avg_fps > ChunkLoadingConfig.MIN_FPS_THRESHOLD * 1.3: # 稍微提高增加阈值
-            # FPS较高时适度增加预加载距离
-            target_preload_distance = min(ChunkLoadingConfig.PRELOAD_DISTANCE + 1, self.preload_distance + 1) # 增加幅度减小
-        # 平滑调整
-        if target_preload_distance != self.preload_distance:
-             self.preload_distance = target_preload_distance
-             chunk_loader.preload_distance = self.preload_distance # 更新加载器配置
-             chunk_loader.generate_spiral_sequence() # 预加载距离变化，重新生成序列
-             logging.info(f"自适应参数: 预加载距离调整为 {self.preload_distance}")
-
-        # 调整更新间隔 (更平滑的调整)
-        target_update_interval = self.update_interval
-        if avg_frame_time > 0.03: # 对应约 33 FPS，稍微放宽增加间隔的条件
-            # 帧时间较高时轻微增加间隔
-            target_update_interval = min(ChunkLoadingConfig.UPDATE_INTERVAL * 1.5, self.update_interval * 1.1) # 增加幅度减小
-        elif avg_frame_time < 0.018: # 对应约 55 FPS，稍微收紧减少间隔的条件
-            # 帧时间较低时适度减少更新间隔
-            target_update_interval = max(ChunkLoadingConfig.UPDATE_INTERVAL * 0.7, self.update_interval * 0.9) # 减少幅度减小
-        # 平滑调整
-        if abs(target_update_interval - self.update_interval) > 0.001: # 调整阈值
-            self.update_interval = target_update_interval
-            logging.info(f"自适应参数: 更新间隔调整为 {self.update_interval:.3f}s")
-
-        # 内存压力检查
-        if ChunkLoadingConfig.should_cleanup_memory(memory_usage):
-            logging.warning("内存压力过大，触发清理机制")
-            self._trigger_memory_cleanup()
-    
-    def _trigger_memory_cleanup(self):
-        """触发内存清理，在内存压力大时更积极地卸载"""
-        # 确保必要的模块已导入
-        from chunk_loading_config import ChunkLoadingConfig
-        from chunk_state_manager import chunk_state_manager
-        from loading_system import get_chunk_position
-        from block_cache import block_cache
-        import gc
-        import logging # Ensure logging is available
-
-        logging.warning("触发内存清理机制")
-        
-        # 临时采用更小的卸载距离以强制清理
-        temporary_unload_distance = max(self.preload_distance + 1, int(self.unload_distance * 0.7))
-        logging.debug(f"内存清理：临时卸载距离设置为 {temporary_unload_distance}")
-
-        # 清理比临时距离更远的区块
-        try:
-            player_chunk = get_chunk_position(self.performance_monitor.get_player_position())
-        except Exception as e:
-            logging.error(f"内存清理：获取玩家区块位置失败: {e}")
-            return
-            
-        chunks_to_unload = []
-        for chunk_pos in list(self.loaded_chunks.keys()): # Iterate over a copy of keys
-            try:
-                # Assuming _get_chunk_distance exists in this class
-                dist = self._get_chunk_distance(chunk_pos, player_chunk) 
-                if dist > temporary_unload_distance:
-                    chunks_to_unload.append(chunk_pos)
-            except Exception as e:
-                 logging.error(f"内存清理：计算区块距离 {chunk_pos} 时出错: {e}")
-        
-        logging.info(f"内存清理：计划卸载 {len(chunks_to_unload)} 个区块")
-        unloaded_count = 0
-        for chunk_pos in chunks_to_unload:
-            if chunk_pos in self.loaded_chunks: # Check if still loaded
-                 try:
-                    # 保存状态（如果需要且已修改）
-                    chunk_to_save = self.loaded_chunks.get(chunk_pos)
-                    save_state = False
-                    if chunk_to_save:
-                        # Use chunk_state_manager to check for modifications
-                        if chunk_state_manager.has_modifications(chunk_pos):
-                            save_state = True
-                            
-                    if save_state:
-                        logging.debug(f"内存清理：保存已修改区块 {chunk_pos} 的状态")
-                        chunk_state_manager.save_chunk_state(chunk_pos, chunk_to_save)
-                        # Clear modifications after saving
-                        chunk_state_manager.clear_modifications(chunk_pos)
-
-                    # 卸载
-                    chunk = self.loaded_chunks.pop(chunk_pos, None)
-                    if chunk and hasattr(chunk, 'destroy'):
-                        chunk.destroy()
-                        self.stats['chunks_unloaded_total'] += 1
-                        unloaded_count += 1
-                 except Exception as e:
-                    logging.error(f"内存清理卸载区块 {chunk_pos} 时出错: {e}")
-
-        if unloaded_count > 0:
-             logging.info(f"内存清理：成功卸载 {unloaded_count} 个区块")
-
-        # 强制进行垃圾回收
-        gc.collect()
-        logging.debug("内存清理：执行垃圾回收")
-        
-        # 清理缓存 (Assuming optimize_cache_size exists)
-        try:
-            block_cache.optimize_cache_size()
-            logging.debug("内存清理：优化缓存大小")
-        except AttributeError:
-             logging.warning("内存清理：block_cache 没有 optimize_cache_size 方法")
-        except Exception as e:
-             logging.error(f"内存清理：优化缓存时出错: {e}")
-
-    def _get_chunk_distance(self, chunk_pos, player_chunk=None):
-        """计算区块到玩家的距离 (曼哈顿距离)"""
-        if player_chunk is None:
-             player_chunk = get_chunk_position(self.performance_monitor.get_player_position())
-        dx = chunk_pos[0] - player_chunk[0]
-        dz = chunk_pos[1] - player_chunk[1]
-        # return max(abs(dx), abs(dz)) # Chebyshev distance
-        return abs(dx) + abs(dz) # Manhattan distance
+    def _get_chunk_distance(self, chunk_pos1, chunk_pos2):
+        """计算两个区块之间的距离"""
+        return abs(chunk_pos1[0] - chunk_pos2[0]) + abs(chunk_pos1[1] - chunk_pos2[1])
 
     def toggle(self):
         """切换优化器开关"""
@@ -587,6 +720,21 @@ class ChunkLoadingOptimizer:
 # 创建全局实例
 chunk_loading_optimizer = ChunkLoadingOptimizer()
 
+# 辅助函数 - 集成到主循环
+def integrate_with_game_loop(player, delta_time):
+    """将区块加载优化器集成到游戏主循环"""
+    # 获取玩家位置和朝向
+    player_position = player.position
+    player_direction = player.forward
+    
+    # 更新区块加载优化器
+    chunk_loading_optimizer.update(player_position, player_direction, delta_time)
+    
+    # 增量区块生成 - 将单个区块生成任务分解为多个步骤
+    chunk_loading_optimizer.chunk_generation_steps = defaultdict(int)  # 记录每个区块的生成步骤
+    chunk_loading_optimizer.max_steps_per_frame = 5  # 每帧最多处理5个生成步骤
+    chunk_loading_optimizer._process_incremental_generation()
+
 # 辅助函数 - 预热系统
 def preload_initial_chunks(player_position, distance=2):
     """预热系统，提前加载玩家周围的区块"""
@@ -604,13 +752,3 @@ def preload_initial_chunks(player_position, distance=2):
     chunk_loader.process_queue(max_chunks=len(surrounding_chunks), chunk_generator=chunk_loading_optimizer._generate_chunk)
     
     logging.info(f"已预加载 {len(surrounding_chunks)} 个区块")
-
-# 辅助函数 - 集成到主循环
-def integrate_with_game_loop(player, delta_time):
-    """将区块加载优化器集成到游戏主循环"""
-    # 获取玩家位置和朝向
-    player_position = player.position
-    player_direction = player.forward
-    
-    # 更新区块加载优化器
-    chunk_loading_optimizer.update(player_position, player_direction, delta_time)

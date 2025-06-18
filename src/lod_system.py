@@ -6,9 +6,9 @@ import time
 
 # LOD级别定义 - 极度降低距离阈值以提高性能
 LOD_LEVELS = [
-    {'distance': 3, 'name': '高细节', 'collision': True, 'update_interval': 0.5},  # 近距离 - 高细节
-    {'distance': 6, 'name': '中细节', 'collision': True, 'update_interval': 1.0},   # 中距离 - 中细节
-    {'distance': 12, 'name': '低细节', 'collision': False, 'update_interval': 2.0}   # 远距离 - 低细节
+    {'distance': 2, 'name': '高细节', 'collision': True, 'update_interval': 0.5},  # 近距离 - 高细节，距离从3降低到2
+    {'distance': 5, 'name': '中细节', 'collision': True, 'update_interval': 1.0},   # 中距离 - 中细节，距离从6降低到5
+    {'distance': 10, 'name': '低细节', 'collision': False, 'update_interval': 2.0}   # 远距离 - 低细节，距离从12降低到10
 ]
 
 class LODManager:
@@ -109,18 +109,36 @@ class LODManager:
         # 这里简化处理，实际项目中可以使用不同分辨率的纹理
         
         return True  # 返回True表示LOD级别已更新
-    
+        
+        # 3. 网格简化 - 根据LOD级别使用不同细节的模型
+        # 3. 使用缩放和透明度替代模型切换实现LOD效果
+        if current_lod == 0:
+            block.scale = Vec3(1, 1, 1)
+            block.alpha = 1.0
+        elif current_lod == 1:
+            block.scale = Vec3(0.95, 0.95, 0.95)
+            block.alpha = 0.9
+        else:
+            block.scale = Vec3(0.9, 0.9, 0.9)
+            block.alpha = 0.8
+        if current_lod == 0:
+            block.model = 'cube'  # 高细节模型(使用现有模型)
+        elif current_lod == 1:
+            block.model = 'cube_low'  # 中等细节模型
+        else:
+            block.model = 'quad'  # 远距离使用平面模型
+
     def update_stats(self, blocks):
         """更新LOD统计信息"""
         if not self.enabled:
             return
-        
+
         # 重置统计信息
         self.stats['high_detail'] = 0
         self.stats['medium_detail'] = 0
         self.stats['low_detail'] = 0
         self.stats['total_blocks'] = len(blocks)
-        
+
         # 统计各LOD级别的方块数量
         for block in blocks:
             if hasattr(block, 'lod_level'):

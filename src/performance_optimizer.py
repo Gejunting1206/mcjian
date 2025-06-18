@@ -149,28 +149,28 @@ class PerformanceOptimizer:
         self.enable_multithreading = True       # 启用多线程
         self.enable_occlusion_culling = True    # 启用遮挡剔除
         
-        # 自适应性能优化参数
+        # 自适应性能优化参数 - 极限优化
         self.adaptive_mode = True  # 启用自适应模式
-        self.target_fps = 30  # 目标帧率
-        self.fps_tolerance = 1  # 帧率容差
-        self.optimization_level = 2  # 当前优化级别 (0-低, 1-中, 2-高)
+        self.target_fps = 300  # 极限目标帧率 (从200提高到300)
+        self.fps_tolerance = 15  # 帧率容差 (从10提高到15)
+        self.optimization_level = 8  # 当前优化级别 (0-低, 1-中, 2-高, 3-极限, 4-超极限, 5-最大优化, 6-7-8极限) (从5提高到8)
         self.last_optimization_change = 0  # 上次调整优化级别的时间
-        self.optimization_cooldown = 0.5  # 调整冷却时间
+        self.optimization_cooldown = 0.05  # 调整冷却时间 (从0.1减小到0.05)
         
-        # 渲染距离控制
-        self.render_distance_base = 2  # 基础渲染距离
-        self.render_distance_min = 1  # 最小渲染距离
-        self.render_distance_max = 4  # 最大渲染距离
+        # 渲染距离控制 - 极限优化
+        self.render_distance_base = 0  # 基础渲染距离 (从1降低到0)
+        self.render_distance_min = 0  # 最小渲染距离 (从1降低到0)
+        self.render_distance_max = 1  # 最大渲染距离 (从2降低到1)
         
-        # 空间分区参数
+        # 空间分区参数 - 极限优化
         self.octree = None  # 八叉树根节点
-        self.octree_max_depth = 5  # 八叉树最大深度
-        self.spatial_grid_size = 16  # 空间网格大小
+        self.octree_max_depth = 2  # 八叉树最大深度 (从3降低到2)
+        self.spatial_grid_size = 64  # 空间网格大小 (从32增加到64)
         self.spatial_grid = defaultdict(list)  # 空间哈希网格
         
-        # 多线程处理
+        # 多线程处理 - 极限优化
         self.worker_threads = []  # 工作线程池
-        self.max_threads = 4      # 最大线程数
+        self.max_threads = 16     # 最大线程数 (从12提高到16)
         self.thread_tasks = []    # 线程任务队列
         self.thread_lock = threading.Lock()  # 线程锁
         

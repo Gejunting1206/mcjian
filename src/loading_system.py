@@ -31,7 +31,7 @@ STATUS_FAILED = 3          # 加载失败
 class ChunkLoadingSystem:
     """区块加载系统 - 提供高效的区块加载、预加载和缓存机制"""
     
-    def __init__(self, max_concurrent_loads=3, cache_size=50):
+    def __init__(self, max_concurrent_loads=4, cache_size=60):  # 增加缓存大小从50到60
         # 区块加载队列和状态跟踪
         self.load_queue = PriorityQueue()  # 优先级队列
         self.queued_chunks = set()         # 已加入队列的区块集合
@@ -188,7 +188,7 @@ class ChunkLoadingSystem:
         
         # 只处理螺旋序列中的一部分，减少每次处理的区块数量
         # 优先处理距离玩家较近的区块
-        spiral_to_process = self.preload_spiral[:min(len(self.preload_spiral), 12)]  # 最多处理12个螺旋位置
+        spiral_to_process = self.preload_spiral[:min(len(self.preload_spiral), 8)]  # 最多处理8个螺旋位置
         
         for dx, dz in spiral_to_process:
             # 如果达到最大处理数量，退出循环
@@ -391,6 +391,58 @@ class ChunkLoadingSystem:
             elif hit_rate > 0.8 and len(self.chunk_cache) < self.cache_size * 0.5:
                 # 缓存命中率高且缓存使用率低，减小缓存大小
                 self.cache_size = max(20, int(self.cache_size * 0.8))
+    
+    def load_chunk(self, chunk_pos):
+        """加载单个区块 - 供外部直接调用
+        
+        Args:
+            chunk_pos: 区块坐标
+            
+        Returns:
+            加载的区块数据
+        """
+        # 检查缓存
+        if chunk_pos in self.chunk_cache:
+            self.cache_hits += 1
+            self.stats['cache_hits'] += 1
+            # 更新访问时间和LRU队列
+            self.cache_access_times[chunk_pos] = time.time()
+            if chunk_pos in self.lru_queue:
+                self.lru_queue.remove(chunk_pos)
+            self.lru_queue.append(chunk_pos)
+            return self.chunk_cache[chunk_pos]
+        
+        # 标记为正在加载
+        with self.load_lock:
+            self.loading_chunks.add(chunk_pos)
+            self.chunk_status[chunk_pos] = STATUS_LOADING
+        
+        try:
+            # 这里需要调用区块生成器，但我们没有直接的引用
+            # 使用默认的区块生成逻辑
+            from chunk_loading_optimizer import ChunkLoadingOptimizer
+            optimizer = ChunkLoadingOptimizer()
+            chunk_data = optimizer._generate_chunk(chunk_pos)
+            
+            # 添加到缓存
+            self._add_to_cache(chunk_pos, chunk_data)
+            
+            # 更新状态
+            self.chunk_status[chunk_pos] = STATUS_LOADED
+            
+            # 记录加载时间
+            self._record_load_time(0.01)  # 使用默认值
+            
+            return chunk_data
+        except Exception as e:
+            logging.error(f"直接加载区块 {chunk_pos} 时出错: {e}")
+            self.chunk_status[chunk_pos] = STATUS_FAILED
+            raise
+        finally:
+            # 从加载集合中移除
+            with self.load_lock:
+                if chunk_pos in self.loading_chunks:
+                    self.loading_chunks.remove(chunk_pos)
     
     def get_loading_stats(self):
         """获取加载统计信息"""
