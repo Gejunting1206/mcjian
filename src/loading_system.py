@@ -265,10 +265,16 @@ class ChunkLoadingSystem:
                     self.chunk_status[chunk_pos] = STATUS_LOADED
                     chunks_loaded.append((chunk_pos, chunk_data))
                 else:
-                    # 检查处理时间是否已经过长，如果过长则提前退出
-                    current_process_time = time.time() - process_start_time
-                    if current_process_time > 0.016:  # 16ms，约等于一帧的时间
-                        break
+                    # 初始化加载时不限制处理时间，确保所有区块都能加载完成
+                    # 只在常规游戏循环中限制处理时间
+                    if not hasattr(self, 'initial_loading') or not self.initial_loading:
+                        current_process_time = time.time() - process_start_time
+                        if current_process_time > 0.016:  # 16ms，约等于一帧的时间
+                            break
+                    else:
+                        # 初始加载时，每处理10个区块输出一次进度日志
+                        if chunks_processed % 10 == 0:
+                            logging.info(f"初始加载中：已处理 {chunks_processed} 个区块...")
                         
                     # 生成区块
                     try:

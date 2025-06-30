@@ -5,10 +5,10 @@ class ChunkLoadingConfig:
     """区块加载和缓存配置类"""
     
     # 区块加载参数
-    MAX_CHUNKS_PER_FRAME = 2        # 每帧最大加载区块数 (从4降低到2，极限减少每帧负担)
-    PRELOAD_DISTANCE = 0            # 预加载距离 (从1降低到0，极大减少内存占用)
-    UNLOAD_DISTANCE = 1             # 卸载距离 (从2降低到1，极度积极地卸载远处区块)
-    LOADING_THREADS = 8             # 加载线程数 (从6提高到8，最大化并行处理能力)
+    MAX_CHUNKS_PER_FRAME = 3        # 每帧最大加载区块数 (从2提高到3，支持更大渲染距离)
+    PRELOAD_DISTANCE = 16           # 预加载距离 (从1提高到16，支持16个区块的渲染距离)
+    UNLOAD_DISTANCE = 18            # 卸载距离 (从1提高到18，在渲染距离外2个区块处卸载)
+    LOADING_THREADS = 12            # 加载线程数 (从8提高到12，增加并行处理能力)
     
     # 缓存参数
     CACHE_SIZE = 100                # 缓存大小 (从150降低到100)

@@ -29,7 +29,7 @@ class PerformanceConfig:
     
     # 渲染优化参数
     CAMERA_MOVE_THRESHOLD = 3.0                 # 摄像机移动阈值（从5.0减少到3.0）
-    RENDER_DISTANCE_LIMIT = 40                  # 渲染距离限制
+    RENDER_DISTANCE_LIMIT = 16                  # 渲染距离限制（从40减少到16）
     SPATIAL_HASH_CELL_SIZE = 64                 # 空间哈希网格大小
     
     # 批量渲染参数

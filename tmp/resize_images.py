@@ -8,7 +8,7 @@ def resize_images(image_dir):
         os.makedirs(output_dir)
 
     # 遍历文件夹中的所有文件
-    for filename in os.listdir(image_dir):
+    for filename in ['sun.png','moon.png']:
         if filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):  # 添加更多图片格式
             try:
                 # 打开图片
@@ -27,5 +27,5 @@ def resize_images(image_dir):
                 print(f"处理 {filename} 时出错: {e}")
 
 if __name__ == "__main__":
-    image_dir = f"D:/下载/[苦力怕论坛]MC方块模板1.17.34/MC方块模板1.17.34/textures/blocks"
+    image_dir = f"..\\src\\assets"
     resize_images(image_dir)

@@ -157,16 +157,17 @@ class PerformanceOptimizer:
         self.last_optimization_change = 0  # 上次调整优化级别的时间
         self.optimization_cooldown = 0.05  # 调整冷却时间 (从0.1减小到0.05)
         
-        # 渲染距离控制 - 极限优化
-        self.render_distance_base = 0  # 基础渲染距离 (从1降低到0)
-        self.render_distance_min = 0  # 最小渲染距离 (从1降低到0)
-        self.render_distance_max = 1  # 最大渲染距离 (从2降低到1)
+        # 渲染距离控制 - 优化为16区块
+        self.render_distance_base = 16  # 基础渲染距离 (从0提高到16)
+        self.render_distance_min = 8   # 最小渲染距离 (从0提高到8)
+        self.render_distance_max = 16  # 最大渲染距离 (从1提高到16)
         
         # 空间分区参数 - 极限优化
         self.octree = None  # 八叉树根节点
         self.octree_max_depth = 2  # 八叉树最大深度 (从3降低到2)
         self.spatial_grid_size = 64  # 空间网格大小 (从32增加到64)
-        self.spatial_grid = defaultdict(list)  # 空间哈希网格
+        self.spatial_grid = defaultdict(list)  # 旧的空间哈希网格
+        self.spatial_hash_grid = None  # 新的优化空间哈希网格，将在需要时初始化
         
         # 多线程处理 - 极限优化
         self.worker_threads = []  # 工作线程池
@@ -316,25 +317,25 @@ class PerformanceOptimizer:
         return blocks
     
     def _get_nearby_cells(self, position, radius):
-        """获取附近的空间网格单元"""
+        """获取附近的空间网格单元，使用优化的空间哈希网格"""
         if not self.enable_spatial_partitioning:
             return []
         
-        nearby_blocks = []
-        center_x = int(position.x // self.spatial_grid_size)
-        center_y = int(position.y // self.spatial_grid_size)
-        center_z = int(position.z // self.spatial_grid_size)
+        # 使用优化的空间哈希网格查询附近对象
+        from spatial_hash_grid import SpatialHashGrid
         
-        # 计算网格半径
-        grid_radius = max(1, int(radius // self.spatial_grid_size) + 1)
+        # 如果spatial_hash_grid实例不存在，则创建一个
+        if not hasattr(self, 'spatial_hash_grid') or self.spatial_hash_grid is None:
+            self.spatial_hash_grid = SpatialHashGrid(cell_size=self.spatial_grid_size)
+            
+            # 将现有的空间网格数据迁移到新的空间哈希网格
+            for grid_key, blocks in self.spatial_grid.items():
+                for block in blocks:
+                    if hasattr(block, 'position'):
+                        self.spatial_hash_grid.insert(block, block.position)
         
-        # 遍历附近的网格单元
-        for x in range(center_x - grid_radius, center_x + grid_radius + 1):
-            for y in range(center_y - grid_radius, center_y + grid_radius + 1):
-                for z in range(center_z - grid_radius, center_z + grid_radius + 1):
-                    grid_key = (x, y, z)
-                    if grid_key in self.spatial_grid:
-                        nearby_blocks.extend(self.spatial_grid[grid_key])
+        # 使用空间哈希网格查询附近对象
+        nearby_blocks = self.spatial_hash_grid.query_nearby(position, radius)
         
         return nearby_blocks
     
@@ -419,7 +420,7 @@ class PerformanceOptimizer:
         self.stats['render_distance'] = self.render_distance_base
     
     def _adaptive_performance_update(self):
-        """自适应性能优化，根据当前帧率动态调整优化策略，专注于算法级优化而非简单降低渲染质量"""
+        """自适应性能优化，根据当前帧率动态调整优化策略，针对16区块渲染距离优化"""
         # 获取当前帧率
         from ursina import application
         current_fps = getattr(application, 'fps', 30)
@@ -432,9 +433,10 @@ class PerformanceOptimizer:
         
         # 根据帧率与目标帧率的差距决定是否调整优化策略
         fps_diff = current_fps - self.target_fps
+        fps_ratio = current_fps / self.target_fps if self.target_fps > 0 else 0
         
         # 帧率极度低下，采取算法级紧急优化措施
-        if current_fps < 8:
+        if current_fps < 15:
             print(f"性能优化：帧率极度低下 ({current_fps} FPS)，启用算法级紧急优化措施")
             
             # 启用所有优化算法
@@ -459,13 +461,17 @@ class PerformanceOptimizer:
             self._apply_optimization_level()
             self.last_optimization_change = current_time
             
-        # 帧率极低，采取算法优化措施
-        elif current_fps < 15:
-            print(f"性能优化：帧率极低 ({current_fps} FPS)，启用算法优化措施")
+            # 临时降低渲染距离
+            self.render_distance_base = self.render_distance_min
+            
+        # 帧率较低，采取算法优化措施
+        elif current_fps < 30:
+            print(f"性能优化：帧率较低 ({current_fps} FPS)，启用算法优化措施")
             
             # 启用关键优化算法
             self.enable_spatial_partitioning = True
             self.enable_multithreading = True
+            self.enable_occlusion_culling = True
             self.frustum_cache_enabled = True
             
             # 优化空间分区参数
@@ -480,13 +486,17 @@ class PerformanceOptimizer:
             self._apply_optimization_level()
             self.last_optimization_change = current_time
             
-        # 帧率低于目标，适度优化
-        elif fps_diff < -self.fps_tolerance:
+            # 适度降低渲染距离
+            self.render_distance_base = int(self.render_distance_min + (self.render_distance_max - self.render_distance_min) * 0.5)
+            
+        # 帧率低于目标但可接受
+        elif current_fps < 45:
             print(f"性能优化：帧率低于目标 ({current_fps} FPS)，适度优化算法参数")
             
             # 启用基本优化算法
             self.enable_spatial_partitioning = True
-            self.enable_multithreading = current_fps < 25  # 仅在较低帧率时启用多线程
+            self.enable_multithreading = True
+            self.enable_occlusion_culling = True
             self.frustum_cache_enabled = True
             
             # 优化空间分区参数
@@ -496,22 +506,48 @@ class PerformanceOptimizer:
             # 优化缓存策略
             self.frustum_cache_lifetime = 0.1  # 适中的缓存生命周期
             
-            # 增加优化级别（如果需要）
-            if self.optimization_level < 2:
-                self.optimization_level += 1
-                self._apply_optimization_level()
-                self.last_optimization_change = current_time
-                print(f"性能优化：增加优化级别至 {self.optimization_level}")
+            # 设置优化级别
+            self.optimization_level = 1
+            self._apply_optimization_level()
+            self.last_optimization_change = current_time
+            
+            # 根据性能调整渲染距离
+            self.render_distance_base = int(self.render_distance_min + (self.render_distance_max - self.render_distance_min) * 0.75)
+            
+        # 接近目标帧率
+        elif current_fps < 60:
+            print(f"性能优化：接近目标帧率 ({current_fps} FPS)，微调优化参数")
+            
+            # 保持关键优化
+            self.enable_spatial_partitioning = True
+            self.enable_multithreading = True
+            self.enable_occlusion_culling = fps_diff < 0
+            self.frustum_cache_enabled = True
+            
+            # 优化空间分区参数以提高精度
+            self.spatial_grid_size = 18  # 减小网格尺寸提高精度
+            self.octree_max_depth = 4    # 保持适中的八叉树深度
+            
+            # 适度调整缓存生命周期
+            self.frustum_cache_lifetime = 0.08  # 适中的缓存生命周期
+            
+            # 设置优化级别
+            self.optimization_level = 1  # 中等优化
+            self._apply_optimization_level()
+            self.last_optimization_change = current_time
+            
+            # 使用较高渲染距离
+            self.render_distance_base = int(self.render_distance_min + (self.render_distance_max - self.render_distance_min) * 0.9)
             
         # 帧率充足，可以减少优化
-        elif fps_diff > self.fps_tolerance * 2 and current_fps > 40:
+        else:
             print(f"性能优化：帧率充足 ({current_fps} FPS)，优化视觉质量")
             
-            # 保持空间分区优化
+            # 保持基本优化
             self.enable_spatial_partitioning = True
-            
-            # 减少多线程使用，降低CPU负担
-            self.enable_multithreading = False
+            self.enable_multithreading = fps_diff < 20
+            self.enable_occlusion_culling = False
+            self.frustum_cache_enabled = True
             
             # 优化空间分区参数以提高精度
             self.spatial_grid_size = 16  # 减小网格尺寸提高精度
@@ -526,6 +562,9 @@ class PerformanceOptimizer:
                 self._apply_optimization_level()
                 self.last_optimization_change = current_time
                 print(f"性能优化：降低优化级别至 {self.optimization_level}，提高视觉质量")
+            
+            # 使用最大渲染距离
+            self.render_distance_base = self.render_distance_max
         
         # 动态调整空间分区参数
         self._adjust_spatial_parameters(current_fps)
@@ -671,8 +710,11 @@ class PerformanceOptimizer:
         self.stats['cache_misses'] += 1
         
         # 使用空间分区获取附近方块
-        if self.enable_spatial_partitioning and self.spatial_grid:
-            # 使用空间哈希网格快速查找
+        if self.enable_spatial_partitioning and hasattr(self, 'spatial_hash_grid') and self.spatial_hash_grid is not None:
+            # 使用优化的空间哈希网格快速查找
+            nearby_blocks = self.spatial_hash_grid.query_nearby(position, radius)
+        elif self.enable_spatial_partitioning and self.spatial_grid:
+            # 使用旧的空间哈希网格查找
             nearby_blocks = self._get_nearby_cells(position, radius)
         elif self.enable_spatial_partitioning and self.octree:
             # 使用八叉树查询

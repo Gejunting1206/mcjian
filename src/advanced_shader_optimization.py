@@ -538,102 +538,6 @@ class AdvancedShaderOptimizer:
         self.last_update_time = current_time
         start_time = time.time()
         
-        # 时间系统: 20刻=1秒, 24000刻=1天(20分钟)
-        ticks_per_second = 20
-        day_cycle_ticks = 24000
-        day_cycle_seconds = day_cycle_ticks / ticks_per_second  # 1200秒=20分钟
-        
-        # 获取当前游戏刻数(玩家出生时从0开始)
-        if not hasattr(self, 'game_ticks'):
-            self.game_ticks = 0  # 初始化为0刻(白天开始)
-        else:
-            # 计算自上次更新以来的时间增量(秒)
-            time_delta = current_time - self.last_update_time
-            self.game_ticks = (self.game_ticks + int(time_delta * ticks_per_second)) % day_cycle_ticks
-        
-        # 计算当前周期位置(0.0-1.0)
-        cycle_position = self.game_ticks / day_cycle_ticks
-        sun_angle = cycle_position * 2 * math.pi  # 2π弧度对应完整周期
-        
-        # 太阳方向向量(基于时间阶段的非线性运动)
-        def ease_in_out(t):
-            """缓入缓出函数，使太阳运动更自然"""
-            return 0.5 - 0.5 * math.cos(t * math.pi)
-        
-        # 时间阶段判断及太阳高度计算
-        if 0 <= self.game_ticks < 12000:  # 白天(0-12000刻, 10分钟)
-            # 太阳从日出到日落的平滑运动(0.2π到1.8π弧度)
-            day_progress = self.game_ticks / 12000
-            sun_angle = 0.2 * math.pi + ease_in_out(day_progress) * 1.6 * math.pi
-            sun_height_factor = 1.0
-            phase = 'day'
-        elif 12000 <= self.game_ticks < 13800:  # 日落(12000-13800刻, 1.5分钟)
-            sunset_progress = (self.game_ticks - 12000) / 1800
-            sun_angle = 1.8 * math.pi + sunset_progress * 0.3 * math.pi
-            sun_height_factor = 1.0 - sunset_progress
-            phase = 'sunset'
-        elif 13800 <= self.game_ticks < 22200:  # 夜晚(13800-22200刻, 7分钟)
-            night_progress = (self.game_ticks - 13800) / 8400
-            sun_angle = 2.1 * math.pi + night_progress * 1.8 * math.pi
-            sun_height_factor = 0.0
-            phase = 'night'
-        else:  # 日出(22200-24000刻, 1.5分钟)
-            sunrise_progress = (self.game_ticks - 22200) / 1800
-            sun_angle = 3.9 * math.pi + sunrise_progress * 0.3 * math.pi
-            sun_height_factor = sunrise_progress
-            phase = 'sunrise'
-        
-        # 计算太阳方向向量
-        sun_dir = Vec3(
-            math.cos(sun_angle),
-            math.sin(sun_angle) * 0.8 * sun_height_factor,
-            math.sin(sun_angle) * 0.6 * sun_height_factor
-        ).normalized()
-        
-        # 颜色过渡系统
-        def color_lerp(a, b, t):
-            """颜色线性插值"""
-            return Vec3(
-                a.x + (b.x - a.x) * t,
-                a.y + (b.y - a.y) * t,
-                a.z + (b.z - a.z) * t
-            )
-        
-        # 定义基础颜色
-        day_ambient = Vec3(0.4, 0.4, 0.45)
-        day_fog = Vec3(0.5, 0.6, 0.7)
-        sunset_ambient = Vec3(0.3, 0.15, 0.2)
-        sunset_fog = Vec3(0.4, 0.2, 0.3)
-        night_ambient = Vec3(0.03, 0.03, 0.08)
-        night_fog = Vec3(0.05, 0.05, 0.1)
-        sunrise_ambient = Vec3(0.3, 0.15, 0.25)
-        sunrise_fog = Vec3(0.4, 0.25, 0.35)
-        
-        # 根据时间阶段计算颜色
-        if phase == 'day':
-            ambient_color = day_ambient
-            fog_color = day_fog
-        elif phase == 'sunset':
-            # 日落颜色过渡(白天->日落)
-            t = sunset_progress
-            ambient_color = color_lerp(day_ambient, sunset_ambient, t)
-            fog_color = color_lerp(day_fog, sunset_fog, t)
-        elif phase == 'night':
-            # 夜晚颜色保持
-            ambient_color = night_ambient
-            fog_color = night_fog
-        else:  # sunrise
-            # 日出颜色过渡(夜晚->白天)
-            t = sunrise_progress
-            ambient_color = color_lerp(night_ambient, sunrise_ambient, t)
-            fog_color = color_lerp(night_fog, sunrise_fog, t)
-        
-        # 曙光效果(日出前开始)
-        if 22009 <= self.game_ticks < 22200:
-            dawn_progress = (self.game_ticks - 22009) / (22200 - 22009)
-            ambient_color = color_lerp(night_ambient, sunrise_ambient, dawn_progress * 0.3)
-            fog_color = color_lerp(night_fog, sunrise_fog, dawn_progress * 0.3)
-        
         # 更新相机位置
         if camera_position is None and hasattr(camera, 'position'):
             camera_position = camera.position
@@ -652,9 +556,9 @@ class AdvancedShaderOptimizer:
                         entity.set_shader_input('camera_position', camera_position)
                     
                     # 设置环境光、雾颜色和光照方向（所有实体通用）
-                    entity.set_shader_input('ambient_color', ambient_color)
-                    entity.set_shader_input('fog_color', fog_color)
-                    entity.set_shader_input('light_direction', sun_dir)
+                    entity.set_shader_input('ambient_color', Vec3(0.4, 0.4, 0.45))  # 默认白天环境光
+                    entity.set_shader_input('fog_color', Vec3(0.5, 0.6, 0.7))  # 默认白天雾色
+                    entity.set_shader_input('light_direction', Vec3(0.5, 1.0, 0.3).normalized())  # 默认光照方向
                     
                     # 特定着色器参数更新
                     if shader_type == 'water':

@@ -29,8 +29,8 @@ class ChunkLoadingOptimizer:
         
         # 区块加载参数
         self.max_chunks_per_frame = ChunkLoadingConfig.MAX_CHUNKS_PER_FRAME  # 使用配置中的每帧加载区块数
-        self.max_steps_per_frame = 50  # 每帧最大生成步骤数，控制增量生成负载
-        self.preload_distance = ChunkLoadingConfig.PRELOAD_DISTANCE - 1      # 预加载距离减1
+        self.max_steps_per_frame = 100  # 每帧最大生成步骤数，从50提高到100，加快区块生成
+        self.preload_distance = ChunkLoadingConfig.PRELOAD_DISTANCE      # 使用配置中的预加载距离
         self.unload_distance = ChunkLoadingConfig.UNLOAD_DISTANCE       # 卸载距离
         
         # 异步加载控制
@@ -531,16 +531,45 @@ class ChunkLoadingOptimizer:
     def _create_chunk_object(self, chunk_pos, chunk_data):
         """创建最终的区块对象"""
         from loading_system import Chunk  # 从加载系统导入区块类
-        # 创建实际的区块对象
-        chunk = Chunk(position=chunk_pos)
-        chunk.blocks = chunk_data['blocks']
-        chunk.structures = chunk_data['structures']
-        chunk.generate_mesh()  # 生成区块网格
-        return chunk
         # 首先检查缓存
-        cached_data = block_cache.get_block_data(chunk_pos)
-        if cached_data is not None:
-            return cached_data
+        try:
+            from block_cache import block_cache
+            cached_data = block_cache.get_block_data(chunk_pos)
+            if cached_data is not None:
+                logging.debug(f"使用缓存创建区块 {chunk_pos}")
+                return cached_data
+        except Exception as e:
+            logging.warning(f"检查区块缓存时出错: {e}")
+        
+        # 创建实际的区块对象
+        try:
+            chunk = Chunk(position=chunk_pos)
+            chunk.blocks = chunk_data['blocks']
+            chunk.structures = chunk_data['structures']
+            
+            # 处理网格生成
+            if hasattr(chunk, 'generate_mesh'):
+                # 如果区块对象有 generate_mesh 方法，直接调用
+                chunk.generate_mesh()  # 生成区块网格
+            else:
+                # 否则尝试使用 mesh_splitting_renderer 生成网格
+                try:
+                    import main
+                    if hasattr(main, 'mesh_renderer') and main.mesh_renderer:
+                        # 为区块中的每个方块添加到网格渲染器
+                        for block in chunk.blocks:
+                            if hasattr(block, 'position'):
+                                main.mesh_renderer.add_block(block.position, getattr(block, 'id', 0))
+                except ImportError:
+                    logging.warning(f"无法导入 mesh_renderer 模块，区块 {chunk_pos} 的网格可能无法正确显示")
+                except Exception as e:
+                    logging.warning(f"使用 mesh_renderer 生成网格时出错: {e}")
+            
+            logging.debug(f"成功创建区块 {chunk_pos}")
+            return chunk
+        except Exception as e:
+            logging.error(f"创建区块对象时出错: {e}")
+            return None
 
         # 检查是否已有生成中的数据
         if chunk_pos not in self.chunk_generation_data:
@@ -736,19 +765,38 @@ def integrate_with_game_loop(player, delta_time):
     chunk_loading_optimizer._process_incremental_generation()
 
 # 辅助函数 - 预热系统
-def preload_initial_chunks(player_position, distance=2):
+def preload_initial_chunks(player_position, distance=None):
     """预热系统，提前加载玩家周围的区块"""
+    # 如果未指定距离，使用配置中的预加载距离
+    if distance is None:
+        from chunk_loading_config import ChunkLoadingConfig
+        distance = ChunkLoadingConfig.PRELOAD_DISTANCE
+    
     # 获取玩家所在区块
     player_chunk = get_chunk_position(player_position)
     
     # 获取周围区块
+    logging.info(f"开始预加载玩家周围 {distance} 个区块半径内的所有区块...")
     surrounding_chunks = get_surrounding_chunks(player_chunk, distance)
+    logging.info(f"需要加载的区块总数: {len(surrounding_chunks)}")
     
     # 预加载区块
     for chunk_pos in surrounding_chunks:
         chunk_loader.queue_chunk(chunk_pos, priority=5.0)
     
-    # 处理加载队列
-    chunk_loader.process_queue(max_chunks=len(surrounding_chunks), chunk_generator=chunk_loading_optimizer._generate_chunk)
+    # 设置初始加载标志，禁用时间限制
+    chunk_loader.initial_loading = True
+    logging.info("已设置初始加载标志，禁用处理时间限制")
     
-    logging.info(f"已预加载 {len(surrounding_chunks)} 个区块")
+    # 处理加载队列，确保所有区块都能加载完成
+    start_time = time.time()
+    chunks_loaded = chunk_loader.process_queue(max_chunks=len(surrounding_chunks), chunk_generator=chunk_loading_optimizer._generate_chunk)
+    end_time = time.time()
+    
+    # 重置初始加载标志
+    chunk_loader.initial_loading = False
+    
+    # 输出详细日志
+    loading_time = end_time - start_time
+    logging.info(f"初始区块加载完成: 已加载 {len(chunks_loaded)}/{len(surrounding_chunks)} 个区块，耗时 {loading_time:.2f} 秒 (平均 {loading_time/max(1, len(chunks_loaded)):.4f} 秒/区块)")
+    return len(chunks_loaded)

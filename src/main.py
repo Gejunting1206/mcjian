@@ -142,54 +142,8 @@ high_perf_renderer = HighPerformanceRenderer()
 Text.default_font = 'assets/5_Minecraft AE(支持中文).ttf'
 
 # 算法级性能优化 - 实现空间哈希和批量渲染
-class SpatialHashGrid:
-    """空间哈希网格 - 用于快速空间查询和碰撞检测"""
-    
-    def __init__(self, cell_size=32):
-        self.cell_size = cell_size
-        self.grid = {}
-        self.object_to_cells = {}  # 对象到网格单元的映射
-    
-    def _hash_position(self, position):
-        """将3D位置哈希到网格坐标"""
-        return (
-            int(position.x // self.cell_size),
-            int(position.y // self.cell_size), 
-            int(position.z // self.cell_size)
-        )
-    
-    def insert(self, obj, position):
-        """插入对象到空间哈希网格"""
-        cell = self._hash_position(position)
-        if cell not in self.grid:
-            self.grid[cell] = set()
-        self.grid[cell].add(obj)
-        self.object_to_cells[obj] = cell
-    
-    def remove(self, obj):
-        """从空间哈希网格移除对象"""
-        if obj in self.object_to_cells:
-            cell = self.object_to_cells[obj]
-            if cell in self.grid:
-                self.grid[cell].discard(obj)
-                if not self.grid[cell]:  # 如果网格单元为空，删除它
-                    del self.grid[cell]
-            del self.object_to_cells[obj]
-    
-    def query_nearby(self, position, radius=1):
-        """查询附近的对象"""
-        center_cell = self._hash_position(position)
-        nearby_objects = set()
-        
-        # 检查周围的网格单元
-        for dx in range(-radius, radius + 1):
-            for dy in range(-radius, radius + 1):
-                for dz in range(-radius, radius + 1):
-                    cell = (center_cell[0] + dx, center_cell[1] + dy, center_cell[2] + dz)
-                    if cell in self.grid:
-                        nearby_objects.update(self.grid[cell])
-        
-        return nearby_objects
+# 导入优化的空间哈希网格
+from spatial_hash_grid import SpatialHashGrid
 
 # 批量渲染管理器
 class BatchRenderManager:
@@ -265,11 +219,11 @@ FPS = 200  # 极限目标帧率 (从120提高到200)
 frame_duration = 1.0 / FPS  # 每帧的持续时间
 MAX_FRAME_TIME = 1.0 / 150  # 最大帧时间，确保至少150FPS
 
-# 动态渲染距离参数 - 极限优化
+# 动态渲染距离参数 - 优化为16区块
 DYNAMIC_RENDER_DISTANCE = True  # 启用动态渲染距离
-MIN_RENDER_DISTANCE = 0         # 最小渲染距离 (从1降低到0)
-MAX_RENDER_DISTANCE = 1         # 最大渲染距离 (保持1)
-RENDER_DISTANCE_UPDATE_INTERVAL = 0.2  # 渲染距离更新间隔（秒）(从0.5减小到0.2)
+MIN_RENDER_DISTANCE = 8         # 最小渲染距离 (从0提高到8)
+MAX_RENDER_DISTANCE = 16        # 最大渲染距离 (从1提高到16)
+RENDER_DISTANCE_UPDATE_INTERVAL = 0.5  # 渲染距离更新间隔（秒）(从0.2提高到0.5)
 
 # 空间网格配置 - 极限优化
 GRID_CELL_SIZE = 64 # 进一步增加网格单元大小以减少计算量 (从48增加到64)
@@ -299,8 +253,6 @@ CHUNK_LOAD_INTERVAL = 1.0  # 区块加载间隔时间 (从0.5增加到1.0)
 # 在文件开头添加全局变量声明
 global hand, sky, fps_text, performance_stats_text, hotbar
 
-# 导入共享类
-from block import Block  # 方块类
 
 # 导入物品栏系统
 from hotbar import Hotbar  # 物品栏类
@@ -393,6 +345,15 @@ Block_list = [
     load_texture('assets/leaf_block.png')   # 树叶方块
 ]
 
+Block_destroy_sounds = [
+    Audio(sound_file_name='assets/sounds/grass.wav', loop=False, autoplay=False),
+    Audio(sound_file_name='assets/sounds/stone.wav', loop=False, autoplay=False),
+    Audio(sound_file_name='assets/sounds/dirt.wav', loop=False, autoplay=False),
+    Audio(sound_file_name='assets/sounds/punch_sound.wav', loop=False, autoplay=False),
+    Audio(sound_file_name='assets/sounds/wood.wav', loop=False, autoplay=False),
+    Audio(sound_file_name='assets/sounds/leaves.wav', loop=False, autoplay=False),
+]
+
 # 方块ID定义
 GRASS = 0
 STONE = 1
@@ -405,14 +366,11 @@ LEAF = 5
 # 包含10个不同阶段的破坏效果纹理
 crack_textures = [load_texture(f'assets/crack_{i}.png') for i in range(1, 11)]
 
-block_type_id = 0
 # 游戏资源加载
 # 天空盒纹理 - 用于背景
 sky_texture = load_texture('assets/skybox.png')
 # 手臂纹理 - 第一人称视角显示
 arm_texture = load_texture('assets/arm_texture.png')
-# 破坏方块音效
-punch_sound = Audio(sound_file_name='assets/punch_sound.wav', loop=False, autoplay=False)
 # 物品栏实例
 hotbar = None  # 将在游戏开始时初始化
 
@@ -421,43 +379,31 @@ hotbar = None  # 将在游戏开始时初始化
 
 class SpatialGrid:
     def __init__(self):
-        self.grid = {}
         self.last_frustum_update = 0
         self.frustum_update_interval = 0.1  # 减少视锥体更新间隔以提高剔除效率 (从0.8减小到0.1)
         self.last_cleanup_time = 0
         self.cleanup_interval = 5.0  # 更频繁地清理未使用的网格单元
-
-    def _get_cell_coords(self, position):
-        # 根据方块位置计算其所在的网格单元坐标
-        return (
-            floor(position.x / GRID_CELL_SIZE),
-            floor(position.y / GRID_CELL_SIZE),
-            floor(position.z / GRID_CELL_SIZE)
-        )
+        
+        # 使用优化的空间哈希网格
+        from spatial_hash_grid import SpatialHashGrid
+        self.spatial_hash = SpatialHashGrid(cell_size=GRID_CELL_SIZE)
+        
+    @property
+    def grid(self):
+        """提供对内部spatial_hash的grid属性的访问"""
+        return self.spatial_hash.grid
 
     def add_block(self, block):
-        cell_coords = self._get_cell_coords(block.position)
-        if cell_coords not in self.grid:
-            self.grid[cell_coords] = []
-        # 避免重复添加
-        if block not in self.grid[cell_coords]:
-            self.grid[cell_coords].append(block)
+        # 使用优化的空间哈希网格添加方块
+        self.spatial_hash.insert(block, block.position)
 
     def remove_block(self, block):
-        cell_coords = self._get_cell_coords(block.position)
-        if cell_coords in self.grid and block in self.grid[cell_coords]:
-            self.grid[cell_coords].remove(block)
-            # 如果单元格变空，可以选择性地删除该键以节省内存
-            if not self.grid[cell_coords]:
-                del self.grid[cell_coords]
+        # 使用优化的空间哈希网格移除方块
+        self.spatial_hash.remove(block)
 
     def get_nearby_blocks(self, position, radius=1):
-        # 获取指定位置附近单元格中的所有方块
-        nearby_blocks = set() # 使用集合避免重复
-        center_cell = self._get_cell_coords(position)
-        cx, cy, cz = center_cell
-        
-        # 优化循环 - 根据当前帧率动态调整搜索半径
+        # 获取指定位置附近的所有方块
+        # 优化 - 根据当前帧率动态调整搜索半径
         from ursina import application
         current_fps = getattr(application, 'fps', 30)
         
@@ -465,26 +411,20 @@ class SpatialGrid:
         if current_fps < 15:
             radius = max(1, radius - 1)  # 减小搜索半径
         
-        for dx in range(-radius, radius + 1):
-            for dy in range(-radius, radius + 1):
-                for dz in range(-radius, radius + 1):
-                    # 跳过对角线上的单元格，减少检查的单元格数量
-                    if abs(dx) == radius and abs(dy) == radius and abs(dz) == radius:
-                        continue
-                        
-                    cell_coords = (cx + dx, cy + dy, cz + dz)
-                    if cell_coords in self.grid:
-                        # 添加该单元格中的所有方块到集合中
-                        nearby_blocks.update(self.grid[cell_coords])
+        # 使用优化的空间哈希网格查询附近方块
+        nearby_blocks = self.spatial_hash.query_nearby(position, radius)
         
         # 定期清理未使用的网格单元
         current_time = time.time()
         if current_time - self.last_cleanup_time > self.cleanup_interval:
             self.last_cleanup_time = current_time
-            self._cleanup_unused_cells(position, radius * 3)  # 清理更大范围外的单元格
+            # 空间哈希网格会自动管理内存，不需要手动清理
         
-        # 返回列表
         return list(nearby_blocks)
+        
+    def _get_cell_coords(self, position):
+        """获取位置对应的网格坐标，转发到内部的spatial_hash对象"""
+        return self.spatial_hash._hash_position(position)
     
     def get_visible_blocks(self, position, radius=1):
         """获取视锥体内可见的方块，并应用LOD"""
@@ -509,31 +449,6 @@ class SpatialGrid:
         
         # 使用性能优化管理器进行视锥体剔除
         return performance_optimizer.get_visible_blocks(self, position, radius, visible_blocks)
-        
-    def _cleanup_unused_cells(self, position, max_distance):
-        """清理远离玩家的未使用网格单元以节省内存"""
-        if not self.grid:
-            return
-            
-        center_cell = self._get_cell_coords(position)
-        cells_to_remove = []
-        
-        # 找出距离过远的单元格
-        for cell_coords in self.grid.keys():
-            dx = abs(cell_coords[0] - center_cell[0])
-            dy = abs(cell_coords[1] - center_cell[1])
-            dz = abs(cell_coords[2] - center_cell[2])
-            
-            # 计算曼哈顿距离
-            distance = dx + dy + dz
-            
-            if distance > max_distance:
-                cells_to_remove.append(cell_coords)
-        
-        # 移除远处的单元格
-        for cell_coords in cells_to_remove:
-            if cell_coords in self.grid:
-                del self.grid[cell_coords]
 
 # 全局空间网格实例
 spatial_grid = SpatialGrid()
@@ -678,8 +593,21 @@ class Block(Button):
                     
             if should_process:
                 # 播放音效
-                punch_sound.play()
-            
+                if key ==  "left mouse down":
+                    logging.info(f"Attempting to play sound for block ID: {self.id} on left mouse down.")
+                    if 0 <= self.id < len(Block_destroy_sounds):
+                        Block_destroy_sounds[self.id].play()
+                        logging.info(f"Played sound for block ID: {self.id}.")
+                    else:
+                        logging.warning(f"Invalid block ID for sound: {self.id}")
+                elif key == "right mouse down":
+                    logging.info(f"Attempting to play sound for block ID: {self.id} on right mouse down.")
+                    if 0 <= self.id < len(Block_destroy_sounds):
+                        Block_destroy_sounds[self.id].play()
+                        logging.info(f"Played sound for block ID: {self.id}.")
+                    else:
+                        logging.warning(f"Invalid block ID for sound: {self.id}")
+
             if key == 'right mouse down':
                 # 设置冷却时间
                 self.collision_cooldown = 5  # 仅在放置方块时设置冷却时间
@@ -691,6 +619,11 @@ class Block(Button):
                         pos = self.position + mouse.normal
                         pos = Vec3(floor(pos.x + 0.5), floor(pos.y + 0.5), floor(pos.z + 0.5))
                         chunk_pos = get_chunk_position(pos)
+                        
+                        # 从物品栏获取当前选中的方块类型
+                        block_type_id = hotbar.get_selected_block_id()
+                        if block_type_id is None:
+                            return
                     
                         # 优化方块存在检查 - 使用哈希表加速查找
                         if chunk_pos in loaded_chunks:
@@ -1250,28 +1183,103 @@ class Chunk:
 
                 # 湖泊生成代码已移除
 
-        # 生成洞穴系统
-        cave_noise_3d = PerlinNoise(octaves=2, seed=int(time.time()) + 2)  # 3D噪声用于洞穴
-        CAVE_THRESHOLD = 0.6  # 洞穴阈值，可调整
-        CAVE_SCALE = 30  # 洞穴噪声缩放
+        # 增强的洞穴系统
+        # 使用多个噪声函数创建不同类型的洞穴
+        cave_noise_3d = PerlinNoise(octaves=2, seed=int(time.time()) + 2)  # 基础洞穴噪声
+        large_cave_noise = PerlinNoise(octaves=1, seed=int(time.time()) + 3)  # 大型洞穴噪声
+        tunnel_noise = PerlinNoise(octaves=3, seed=int(time.time()) + 4)  # 隧道噪声
+        cave_detail_noise = PerlinNoise(octaves=4, seed=int(time.time()) + 5)  # 洞穴细节噪声
+        
+        # 洞穴参数
+        CAVE_THRESHOLD = 0.6  # 基础洞穴阈值
+        LARGE_CAVE_THRESHOLD = 0.7  # 大型洞穴阈值
+        TUNNEL_THRESHOLD = 0.75  # 隧道阈值
+        CAVE_SCALE = 30  # 基础洞穴噪声缩放
+        LARGE_CAVE_SCALE = 60  # 大型洞穴噪声缩放
+        TUNNEL_SCALE = 20  # 隧道噪声缩放
+        DETAIL_SCALE = 10  # 细节噪声缩放
 
-        temp_blocks_data = []
+        # 创建洞穴高度分布函数 - 使洞穴在不同高度有不同密度
+        def cave_density_by_height(y, terrain_height):
+            # 地表附近洞穴较少
+            if y > terrain_height - 6:
+                return 0.2
+            # 中层洞穴密度适中
+            elif y > -10:
+                return 1.0
+            # 深层洞穴密度较高
+            else:
+                return 1.5
+
+        # 创建现有方块位置的字典，用于快速查找
         existing_block_positions = {bd[0]: bd[1] for bd in blocks_data}
 
+        # 处理每个位置
         for x_offset in range(CHUNK_SIZE):
             for z_offset in range(CHUNK_SIZE):
                 wx = x_offset + chunk_x * CHUNK_SIZE
                 wz = z_offset + chunk_z * CHUNK_SIZE
+                terrain_height = heights[(x_offset, z_offset)]
+                
                 # 洞穴主要在石头层生成，避免影响地表和基岩
-                for y_offset in range(heights[(x_offset, z_offset)] - 4, -2): # 从石头层顶部向下到基岩上方
-                    # 获取3D噪声值
-                    noise_val = cave_noise_3d([wx / CAVE_SCALE, y_offset / CAVE_SCALE, wz / CAVE_SCALE])
+                for y_offset in range(terrain_height - 4, -2): # 从石头层顶部向下到基岩上方
                     current_pos = Vec3(wx, y_offset, wz)
-                    # 如果噪声值超过阈值，并且当前位置是石头，则移除石头（形成洞穴）
-                    if noise_val > CAVE_THRESHOLD and existing_block_positions.get(current_pos) == STONE:
-                        # 从 blocks_data 中移除该石头方块
+                    
+                    # 跳过非石头方块
+                    if existing_block_positions.get(current_pos) != STONE:
+                        continue
+                    
+                    # 获取高度密度修正
+                    height_factor = cave_density_by_height(y_offset, terrain_height)
+                    
+                    # 基础洞穴噪声
+                    cave_val = cave_noise_3d([wx / CAVE_SCALE, y_offset / CAVE_SCALE, wz / CAVE_SCALE])
+                    
+                    # 大型洞穴噪声
+                    large_cave_val = large_cave_noise([wx / LARGE_CAVE_SCALE, y_offset / LARGE_CAVE_SCALE, wz / LARGE_CAVE_SCALE])
+                    
+                    # 隧道噪声 - 创建水平隧道
+                    tunnel_val = tunnel_noise([wx / TUNNEL_SCALE, 0.5, wz / TUNNEL_SCALE]) # 固定Y值创建水平隧道
+                    
+                    # 细节噪声 - 为洞穴边缘添加细节
+                    detail_val = cave_detail_noise([wx / DETAIL_SCALE, y_offset / DETAIL_SCALE, wz / DETAIL_SCALE])
+                    
+                    # 洞穴生成逻辑
+                    should_carve = False
+                    
+                    # 基础洞穴
+                    if cave_val > CAVE_THRESHOLD * (1.0 / height_factor):
+                        should_carve = True
+                    
+                    # 大型洞穴 - 在深层更常见
+                    if y_offset < -5 and large_cave_val > LARGE_CAVE_THRESHOLD:
+                        should_carve = True
+                    
+                    # 水平隧道 - 在中层更常见
+                    if -15 < y_offset < -3:
+                        # 创建水平隧道，垂直方向有变化
+                        y_factor = abs((y_offset + 9) / 6) # 在y=-9处隧道最大
+                        if tunnel_val > TUNNEL_THRESHOLD - 0.1 * (1 - y_factor):
+                            should_carve = True
+                    
+                    # 添加细节 - 在洞穴边缘创建更自然的过渡
+                    if cave_val > CAVE_THRESHOLD - 0.1 and cave_val < CAVE_THRESHOLD + 0.05:
+                        if detail_val > 0.4:
+                            should_carve = True
+                    
+                    # 如果应该挖空，从blocks_data中移除该方块
+                    if should_carve:
                         blocks_data = [bd for bd in blocks_data if not (bd[0] == current_pos and bd[1] == STONE)]
                         existing_block_positions.pop(current_pos, None) # 更新记录
+                        
+                        # 在洞穴底部有小概率生成矿石(用石头方块代替，未来可以添加真正的矿石)
+                        if y_offset < -10 and random.random() < 0.05:
+                            # 检查下方是否有方块支撑
+                            below_pos = Vec3(wx, y_offset - 1, wz)
+                            if below_pos in existing_block_positions:
+                                # 添加矿石方块(这里用石头代替)
+                                blocks_data.append((current_pos, STONE))
+                                existing_block_positions[current_pos] = STONE
         
         # 优化树木生成 - 极大减少树木密度并简化生成逻辑
         # 每个区块最多生成1棵树，但概率很低，避免树木过于密集
@@ -1778,11 +1786,12 @@ def update_chunks():
             
             for i in range(check_count):
                 # 循环检查区块
-                if len(chunk_keys) == 0:  # 再次检查，以防在循环中被修改
+                current_chunk_keys = list(loaded_chunks.keys()) # 每次迭代时重新获取最新键列表
+                if not current_chunk_keys:  # 再次检查，以防在循环中被修改
                     break
                     
-                index = (update_chunks.unload_index + i) % len(chunk_keys)
-                chunk_pos = chunk_keys[index]
+                index = (update_chunks.unload_index + i) % len(current_chunk_keys)
+                chunk_pos = current_chunk_keys[index]
                 
                 # 计算与玩家的距离
                 dist = abs(chunk_pos[0] - player_chunk[0]) + abs(chunk_pos[1] - player_chunk[1])
@@ -1796,8 +1805,11 @@ def update_chunks():
                         pass
             
             # 更新检查索引
-            if chunk_keys and len(chunk_keys) > 0:  # 确保 chunk_keys 不为空且长度大于0
-                update_chunks.unload_index = (update_chunks.unload_index + check_count) % max(1, len(chunk_keys))  # 使用 max 确保除数至少为1
+            final_chunk_keys = list(loaded_chunks.keys()) # 获取最终的键列表
+            if final_chunk_keys and len(final_chunk_keys) > 0:  # 确保 final_chunk_keys 不为空且长度大于0
+                update_chunks.unload_index = (update_chunks.unload_index + check_count) % max(1, len(final_chunk_keys))  # 使用 max 确保除数至少为1
+            else:
+                update_chunks.unload_index = 0 # 如果没有区块了，重置索引
     except Exception as e:
         print(f"Error in update_chunks: {e}")
         # 出错时重置状态，避免卡死
@@ -1816,8 +1828,9 @@ def initialize_game():
     global hand, sky, fps_text, performance_stats_text, mesh_renderer  # 声明全局变量
     
     # 添加UI和其他组件
-    sky = Sky(texture='assets/skybox.png')
-    hand = Hand()
+    # 移除纹理天空盒，使用纯天蓝色背景
+    from direct.task import Task
+    base.win.setClearColor((125/255, 170/255, 255/255, 1.0))  # 用户指定的RGB值(125, 170, 255)
     
     # 初始化面片渲染器
     mesh_renderer = MeshSplittingRenderer()
@@ -1825,18 +1838,14 @@ def initialize_game():
     
     # 初始化区块加载优化器
     chunk_loading_optimizer.enabled = True
-    # 预热区块缓存，提前加载玩家周围区块
-    if player and hasattr(player, 'position'):
-        preload_initial_chunks(player.position, distance=2)
-        # 初始化渐进式加载系统
-        initialize_on_game_start(player.position)
-        print("渐进式加载系统初始化完成")
     
     # 创建性能统计显示
     create_performance_stats_display()
     
     # 添加调试信息
-    print("游戏初始化完成，准备生成区块...")
+    print("游戏基础系统初始化完成，准备加载世界...")
+    
+    # 注意：不在这里加载区块，而是在加载屏幕中进行
 
 # 修改 input 函数，添加性能优化快捷键
 def input(key):
@@ -1854,7 +1863,16 @@ def input(key):
 
     # F2 键：截图
     elif key == 'f2':
-        base.screenshot(namePrefix='./screenshots/') # 保存到指定目录
+        import pyautogui # 保存到指定目录
+        screenshot = pyautogui.screenshot()
+        # 生成时间戳
+        timestamp = time.strftime("%Y%m%d%H%M%S")
+        # 截图
+        import os
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        screenshot_dir = os.path.join(project_root, 'screenshots')
+        os.makedirs(screenshot_dir, exist_ok=True)
+        screenshot.save(os.path.join(screenshot_dir, f'screenshot_{timestamp}.png'))
         print("截图已保存！")
     elif key == 'f12':  # F12: 切换综合性能优化器
         enabled = comprehensive_optimizer.toggle()
@@ -2092,15 +2110,37 @@ class MainMenu(Entity):
         destroy(self)
         main_menu = None
         
-        # 直接初始化游戏，不使用加载界面
-        def start_game_directly():
-            # 初始化游戏
-            initialize_game()
+        # 创建加载屏幕
+        loading_screen = Entity(
+            parent=camera.ui,
+            model='quad',
+            color=color.black,
+            scale=(2, 1),
+            z=-1
+        )
+        
+        # 创建加载文本
+        loading_text = Text(
+            parent=loading_screen,
+            text="正在加载世界...",
+            position=(0, 0.2),
+            origin=(0, 0),
+            scale=2,
+            color=color.white
+        )
+        
+        # 创建进度条背景
 
+        
+        # 初始化游戏
+        initialize_game()
+        
 
-
+        
+        # 创建玩家并进入游戏的函数
+        def create_player_and_enter_game(spawn_position, *ui_elements):
             # 创建玩家
-            global player, hotbar
+            global player, hotbar, hand
             player = FirstPersonController(
                 # 恢复使用默认碰撞器
                 jump_height=1.5,  # 降低跳跃高度，减少弹跳问题
@@ -2115,30 +2155,36 @@ class MainMenu(Entity):
             if hasattr(player, 'land_anim'):
                 player.land_anim = None
             
+            # 创建手部模型
+            hand = Hand()
+            
             # 创建物品栏
             hotbar = Hotbar(Block_list)
-
-
-            
-            # 计算出生点的地形高度
-            spawn_x, spawn_z = 0, 0
-            spawn_y = floor(noise([spawn_x/scale, spawn_z/scale]) * height_scale + base_height) + 2 # 加2确保在地面之上
             
             # 设置玩家位置
-            player.position = (spawn_x, spawn_y, spawn_z)
+            player.position = spawn_position
             player.is_sneaking = False
             player.speed = 5  # 正常速度
-            # 不再需要在这里设置jump_height，因为已在构造函数中设置
-            
+
             # 设置游戏状态为正在游戏
             global current_state
             current_state = GameState.PLAYING
             
-            # 移除准备就绪提示
-            pass
+            # 销毁加载屏幕UI元素
+            for element in ui_elements:
+                destroy(element)
+            
+            # 初始化渐进式加载系统
+            from progressive_loading import initialize_on_game_start
+            initialize_on_game_start(player.position)
+            
+            print("游戏世界加载完成，玩家已进入游戏")
         
-        # 在新线程中执行游戏初始化
-        Thread(target=start_game_directly).start()
+        # 初始化游戏后直接进入游戏
+        spawn_x, spawn_z = 2, 2
+        spawn_y = floor(noise([spawn_x/scale, spawn_z/scale]) * height_scale + base_height) + 2 # 加2确保在地面之上
+        spawn_position = Vec3(spawn_x, spawn_y, spawn_z)
+        create_player_and_enter_game(spawn_position, loading_screen, loading_text)
     
     def multiplayer(self):
         # 多人游戏功能（未实现）
@@ -2309,7 +2355,26 @@ def update():
                 
                 # 更新性能统计显示
                 update_performance_stats()
-
+            
+            # 太阳月亮随时间移动逻辑
+            if 'sun' in globals() and 'moon' in globals():                
+                # 时间系统: 20刻=1秒, 24000刻=1天(20分钟)
+                ticks_per_second = 20
+                day_cycle_ticks = 24000
+                day_cycle_seconds = day_cycle_ticks / ticks_per_second  # 1200秒=20分钟
+                
+                # 获取当前游戏刻数
+                if not hasattr(update, 'game_ticks'):
+                    update.game_ticks = 0  # 初始化为0刻(白天开始)
+                else:
+                    # 计算自上次更新以来的时间增量(秒)
+                    time_delta = time.time() - current_time
+                    update.game_ticks = (update.game_ticks + int(time_delta * ticks_per_second)) % day_cycle_ticks
+                
+                # 计算当前周期位置(0.0-1.0)
+                cycle_position = update.game_ticks / day_cycle_ticks
+                
+                # 根据时间周期控制月亮可见性
                 # 根据ui_hidden状态控制性能统计显示
                 if performance_stats_text:
                     performance_stats_text.enabled = show_performance_stats and not ui_hidden
@@ -3018,3 +3083,4 @@ def update_performance_stats():
 if __name__ == '__main__':
     print("Starting game with optimized performance...")
     app.run()
+ 

@@ -280,10 +280,10 @@ def integrate_with_game_loop(player, delta_time):
 
 # 辅助函数 - 游戏启动时初始化
 def initialize_on_game_start(player_position):
-    """游戏启动时初始化渐进式加载系统"""
+    """游戏启动时初始化并立即加载所有渲染距离内的区块"""
     # 重置状态
-    progressive_loader.startup_phase = True
-    progressive_loader.startup_timer = 0
+    progressive_loader.startup_phase = False  # 直接设置为非启动阶段，跳过渐进式加载
+    progressive_loader.startup_timer = progressive_loader.startup_duration  # 设置为已完成启动阶段
     
     # 清空队列
     while not progressive_loader.immediate_queue.empty():
@@ -298,8 +298,37 @@ def initialize_on_game_start(player_position):
         except Empty:
             break
     
-    # 初始化第一阶段加载
-    progressive_loader.current_stage = 0
+    # 设置为最后阶段，加载所有区块
+    progressive_loader.current_stage = len(progressive_loader.load_stages) - 1
+    
+    # 获取玩家所在区块
+    from loading_system import get_chunk_position
+    player_chunk = get_chunk_position(player_position)
+    
+    # 获取当前阶段的加载距离
+    current_distance = progressive_loader.load_stages[progressive_loader.current_stage]["distance"]
+    
+    # 立即加载所有渲染距离内的区块
+    chunks_to_load = []
+    for dx in range(-current_distance, current_distance + 1):
+        for dz in range(-current_distance, current_distance + 1):
+            # 计算区块位置
+            chunk_pos = (player_chunk[0] + dx, player_chunk[1] + dz)
+            # 计算到玩家的距离
+            distance = max(abs(dx), abs(dz))
+            # 所有区块都设置为最高优先级，立即加载
+            priority = 0.1
+            progressive_loader.immediate_queue.put((priority, chunk_pos))
+    
+    # 立即处理队列中的所有区块
+    from chunk_loading_optimizer import preload_initial_chunks
+    preload_initial_chunks(player_position, distance=current_distance)
+    
+    # 更新加载阶段
     progressive_loader._update_loading_stages(player_position)
     
-    logging.info("渐进式加载系统已初始化，开始启动阶段加载")
+    logging.info(f"已立即加载所有渲染距离({current_distance}个区块)内的区块")
+    
+    # 设置统计信息
+    progressive_loader.stats["startup_complete"] = True
+    progressive_loader.stats["startup_progress"] = 1.0

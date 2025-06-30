@@ -297,14 +297,13 @@ def preload_chunk_data(chunk_positions, terrain_generator):
 
 # 辅助函数 - 获取周围区块
 def get_surrounding_chunks(center_pos, radius=1):
-    """获取中心区块周围的区块坐标"""
+    """获取中心区块周围的区块坐标(包括中心区块)"""
     surrounding = []
     center_x, center_z = center_pos
     
     for dx in range(-radius, radius + 1):
         for dz in range(-radius, radius + 1):
-            if dx == 0 and dz == 0:
-                continue  # 跳过中心区块
+            # 包含中心区块
             surrounding.append((center_x + dx, center_z + dz))
     
     return surrounding

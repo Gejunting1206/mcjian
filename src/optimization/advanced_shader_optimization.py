@@ -539,13 +539,8 @@ class AdvancedShaderOptimizer:
                         pass
                     
                     elif shader_type == 'skybox':
-                        # 更新太阳方向（可以基于游戏时间变化）
-                        sun_angle = (game_time / 120.0) % (2 * math.pi)  # 120秒一个周期
-                        sun_dir = Vec3(
-                            math.cos(sun_angle),
-                            math.sin(sun_angle) * 0.8,
-                            math.sin(sun_angle) * 0.6
-                        ).normalized()
+                        # 固定太阳方向（移除昼夜更替效果）
+                        sun_dir = Vec3(0.0, 1.0, 0.0).normalized()
                         entity.set_shader_input('sun_direction', sun_dir)
         
         # 更新统计信息

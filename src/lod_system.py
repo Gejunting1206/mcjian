@@ -12,12 +12,22 @@ LOD_LEVELS = [
 ]
 
 class LODManager:
-    """LOD管理器，根据距离动态调整方块渲染细节"""
+    """LOD管理器，根据距离动态调整方块渲染细节，针对16区块渲染距离优化"""
     
     def __init__(self):
         self.enabled = True
+        self.update_interval = 0.2  # 更新间隔（秒）从0.5减小到0.2
         self.last_update_time = 0
-        self.update_interval = 0.2  # 减少全局更新间隔以减少CPU负担
+        
+        # LOD级别配置 - 针对16区块渲染距离优化
+        self.lod_levels = {
+            0: {'distance': 0, 'detail': 1.0},     # 最高细节 - 近距离
+            1: {'distance': 32, 'detail': 0.8},   # 高细节 - 2区块
+            2: {'distance': 64, 'detail': 0.6},   # 中高细节 - 4区块
+            3: {'distance': 128, 'detail': 0.4},  # 中细节 - 8区块
+            4: {'distance': 192, 'detail': 0.2},  # 低细节 - 12区块
+            5: {'distance': 256, 'detail': 0.1}   # 最低细节 - 16区块
+        }
         self.stats = {
             'high_detail': 0,
             'medium_detail': 0,
@@ -71,19 +81,26 @@ class LODManager:
             self.update_interval = max(0.15, self.update_interval * 0.95)
     
     def get_lod_level(self, distance):
-        """根据距离获取LOD级别"""
+        """根据距离获取LOD级别，针对16区块渲染距离优化"""
         if not self.enabled:
-            return 0  # 如果LOD系统禁用，则返回最高细节级别
+            return 0  # 如果禁用LOD，始终返回最高细节
         
-        for i, level in enumerate(LOD_LEVELS):
-            if distance <= level['distance']:
-                return i
-        
-        # 如果距离超过所有级别，返回最低细节级别
-        return len(LOD_LEVELS) - 1
+        # 根据距离确定LOD级别
+        if distance < 32:  # 2区块
+            return 0  # 最高细节
+        elif distance < 64:  # 4区块
+            return 1  # 高细节
+        elif distance < 128:  # 8区块
+            return 2  # 中高细节
+        elif distance < 192:  # 12区块
+            return 3  # 中细节
+        elif distance < 256:  # 16区块
+            return 4  # 低细节
+        else:
+            return 5  # 最低细节
     
     def apply_lod(self, block, distance_to_player):
-        """应用LOD设置到方块"""
+        """应用LOD到方块，针对16区块渲染距离优化"""
         if not self.enabled or not hasattr(block, 'lod_level'):
             return
         
@@ -96,37 +113,60 @@ class LODManager:
         
         # 更新LOD级别
         block.lod_level = current_lod
-        lod_config = LOD_LEVELS[current_lod]
         
-        # 应用LOD设置
-        # 1. 碰撞检测
-        block.collision = lod_config['collision']
-        
-        # 2. 更新间隔
-        block.update_interval = lod_config['update_interval']
-        
-        # 3. 纹理质量 (可以在这里实现纹理降采样)
-        # 这里简化处理，实际项目中可以使用不同分辨率的纹理
-        
-        return True  # 返回True表示LOD级别已更新
-        
-        # 3. 网格简化 - 根据LOD级别使用不同细节的模型
-        # 3. 使用缩放和透明度替代模型切换实现LOD效果
+        # 更新统计信息
         if current_lod == 0:
+            self.stats['high_detail'] += 1
+        elif current_lod <= 2:
+            self.stats['medium_detail'] += 1
+        else:
+            self.stats['low_detail'] += 1
+        
+        # 应用LOD效果
+        if current_lod == 0:  # 最高细节 - 近距离
+            # 启用所有细节
             block.scale = Vec3(1, 1, 1)
             block.alpha = 1.0
-        elif current_lod == 1:
+            block.model = 'cube'  # 高细节模型
+            block.collision = True
+            block.update_interval = 0.5
+        elif current_lod == 1:  # 高细节 - 2区块
+            # 禁用一些高消耗细节
             block.scale = Vec3(0.95, 0.95, 0.95)
             block.alpha = 0.9
-        else:
+            block.model = 'cube_low'  # 中等细节模型
+            block.collision = True
+            block.update_interval = 1.0
+        elif current_lod == 2:  # 中高细节 - 4区块
+            # 适度减少细节
             block.scale = Vec3(0.9, 0.9, 0.9)
             block.alpha = 0.8
-        if current_lod == 0:
-            block.model = 'cube'  # 高细节模型(使用现有模型)
-        elif current_lod == 1:
-            block.model = 'cube_low'  # 中等细节模型
-        else:
             block.model = 'quad'  # 远距离使用平面模型
+            block.collision = False
+            block.update_interval = 2.0
+        elif current_lod == 3:  # 中细节 - 8区块
+            # 进一步减少细节
+            block.scale = Vec3(0.85, 0.85, 0.85)
+            block.alpha = 0.7
+            block.model = 'quad'
+            block.collision = False
+            block.update_interval = 3.0
+        elif current_lod == 4:  # 低细节 - 12区块
+            # 大幅减少细节
+            block.scale = Vec3(0.8, 0.8, 0.8)
+            block.alpha = 0.6
+            block.model = 'quad'
+            block.collision = False
+            block.update_interval = 4.0
+        else:  # 最低细节 - 16区块
+            # 最小化细节
+            block.scale = Vec3(0.7, 0.7, 0.7)
+            block.alpha = 0.5
+            block.model = 'quad'
+            block.collision = False
+            block.update_interval = 5.0
+        
+        return True  # 返回True表示LOD级别已更新
 
     def update_stats(self, blocks):
         """更新LOD统计信息"""

@@ -1,6 +1,5 @@
 # 物品栏系统
 from ursina import *
-from block import Block  # 导入Block类
 
 class Hotbar:
     """物品栏类，用于显示和管理玩家可用的方块类型"""
